@@ -102,6 +102,11 @@ const ConversationsPage = {
 
           <div class="chat-view hidden" id="chat-view">
             <div class="chat-header" id="chat-header">
+              <button type="button" class="icon-btn chat-back-btn" id="chat-back-btn" title="Back to conversations">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 19 12 12 5"/>
+                </svg>
+              </button>
               <div class="chat-header-avatar" id="chat-avatar">--</div>
               <div class="chat-header-info">
                 <div class="chat-header-name" id="chat-name">--</div>
@@ -336,6 +341,7 @@ const ConversationsPage = {
 
   cacheElements() {
     const q = (id) => this.container.querySelector("#" + id);
+    this.el.convPage = this.container.querySelector(".conv-page");
     this.el.searchInput = q("conv-search-input");
     this.el.filters = q("conv-filters");
     this.el.convList = q("conv-list");
@@ -346,6 +352,7 @@ const ConversationsPage = {
     this.el.countAttention = q("count-attention");
     this.el.chatEmpty = q("chat-empty");
     this.el.chatView = q("chat-view");
+    this.el.chatBackBtn = q("chat-back-btn");
     this.el.chatAvatar = q("chat-avatar");
     this.el.chatName = q("chat-name");
     this.el.chatPlatformIcon = q("chat-platform-icon");
@@ -820,6 +827,7 @@ const ConversationsPage = {
       this.renderBotBanner();
       this.renderMessages();
       this.startChatPolling();
+      this.el.convPage.classList.add("mobile-view-chat");
 
       // Load info panel data
       this.renderInfoPanel();
@@ -878,6 +886,7 @@ const ConversationsPage = {
     this.el.chatEmpty.querySelector(".chat-empty-text").textContent = msg || "Select a conversation to start messaging";
     this.el.infoCol.classList.add("hidden");
     this.state.infoPanelOpen = false;
+    this.el.convPage.classList.remove("mobile-view-chat");
   },
 
   /* =====================================================
@@ -1402,6 +1411,11 @@ const ConversationsPage = {
     this.el.loadMore.addEventListener("click", () => {
       this.state.page += 1;
       this.loadConversations(false);
+    });
+
+    // Mobile: back to conversations list
+    this.el.chatBackBtn.addEventListener("click", () => {
+      this.el.convPage.classList.remove("mobile-view-chat");
     });
 
     // Bot toggle (chat header)

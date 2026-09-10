@@ -22,7 +22,13 @@
             <span class="logo-text">AI Command Center</span>
           </a>
 
-          <div class="topbar-search">
+          <button type="button" class="mobile-search-btn icon-btn" id="mobile-search-btn" title="Search">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+            </svg>
+          </button>
+
+          <div class="topbar-search" id="topbar-search">
             <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="11" cy="11" r="8" />
               <line x1="21" y1="21" x2="16.65" y2="16.65" />
@@ -31,6 +37,12 @@
             <kbd class="search-kbd">Ctrl /</kbd>
           </div>
         </div>
+
+        <button type="button" class="hamburger-btn icon-btn" id="hamburger-btn" title="Menu">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
+            </svg>
+          </button>
 
         <div class="topbar-right">
           <div class="status-pill">
@@ -142,6 +154,9 @@
             <span class="system-status-sub">All systems operational</span>
           </div>
         </nav>
+
+        <!-- ========== SIDEBAR OVERLAY (mobile drawer) ========== -->
+        <div class="sidebar-overlay" id="sidebar-overlay"></div>
 
         <!-- ========== MAIN CONTENT (Outlet) ========== -->
         <main class="main-content" id="app-outlet"></main>
