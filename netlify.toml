@@ -1,0 +1,12 @@
+[build]
+  command = ""
+  publish = "frontend"
+
+[build.environment]
+  # لا حاجة لأي build — ملفات ثابتة (HTML/CSS/JS خام)
+
+# إعادة توجيه طلبات الـ API إلى الـ backend الحقيقي (اختياري — عدّل الرابط حسب النشر)
+# [[redirects]]
+#   from = "/api/*"
+#   to = "https://your-backend-url.example.com/api/:splat"
+#   status = 200
