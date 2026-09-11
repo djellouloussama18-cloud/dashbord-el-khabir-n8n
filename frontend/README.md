@@ -1,18 +1,20 @@
 # Frontend — Dashboard "أكاديمية الخبير"
 
-لوحة تحكم بلا تسجيل دخول (Vanilla JS + HTML + CSS فقط، بلا أي framework أو build tool).
-تفتح مباشرة على `index.html` (sidebar + لوحة المحادثة).
+لوحة تحكم (Vanilla JS + HTML + CSS فقط، بلا أي framework أو build tool) مع **شاشة تسجيل دخول**
+بكلمة سر واحدة، ثم جلسة عبر JWT Bearer token. تفتح على `index.html` وتُعرض شاشة الدخول حتى ينجح
+تسجيل الدخول.
 
 ## البنية
 
 ```
 frontend/
-├── index.html          # الصفحة الرئيسية والوحيدة
+├── index.html          # الصفحة الرئيسية والوحيدة (شاشة الدخول + الداشبورد)
 ├── css/
-│   └── style.css       # تنسيق RTL
+│   └── style.css       # تنسيق RTL (شاشة الدخول + الداشبورد)
 ├── js/
-│   ├── config.js       # BACKEND_URL + API_KEY (يُعدَّل يدويًا)
-│   ├── api.js          # apiFetch + دوال النداءات للـ backend
+│   ├── config.js       # BACKEND_URL (يُعدَّل يدويًا — بلا أي سر)
+│   ├── auth.js         # Login gate: فحص التوكن، تسجيل الدخول، تسجيل الخروج
+│   ├── api.js          # apiFetch (Bearer token) + دوال النداءات للـ backend
 │   ├── dashboard.js    # القائمة: بحث، فلاتر، ترقيم صفحات
 │   └── conversation.js # لوحة المحادثة: رسائل، ON/OFF، ملاحظات
 └── README.md
@@ -24,13 +26,22 @@ frontend/
 
    ```js
    const BACKEND_URL = "https://your-backend-url.example.com";
-   const API_KEY = "PUT_YOUR_DASHBOARD_API_KEY_HERE";
    ```
 
-   - `BACKEND_URL`: رابط الـ backend المنشور.
-   - `API_KEY`: نفس قيمة `DASHBOARD_API_KEY` الموجودة في `backend/.env` (ولّدها بـ `openssl rand -hex 32`).
+   - `BACKEND_URL`: رابط الـ backend المنشور. بلا أي مفتاح أو كلمة سر فالكود.
 
-2. كل الطلبات ترسل تلقائيًا header `X-API-Key`. الطلب الوحيد الذي لا يحتاج مفتاحًا هو `/api/health`.
+2. عند فتح الصفحة:
+   - لا يوجد توكن صالح → تظهر شاشة تسجيل الدخول فقط (محتوى الداشبورد مخفي من البداية، بلا وميض).
+   - توجد توكن صالح → يظهر الداشبورد مباشرة.
+
+## تدفق المصادقة
+
+- `js/auth.js` يخزن التوكن في `localStorage` (المفتاح `dashboard_token`) بعد `POST /api/auth/login`.
+- `js/api.js` يرسل `Authorization: Bearer <token>` في كل طلب محمي.
+- عند أي استجابة `401` تُمسح التوكن وتُعاد شاشة تسجيل الدخول فورًا (الجلسة انتهت أو التوكن تلاعب فيه).
+- **الأمان الحقيقي من السيرفر**: حتى لو عطّل أحد الجافاسكريبت أو عدّل `localStorage` يدويًا،
+  أي نداء API يفشل بلا توكن موقّع من السيرفر (`jwt.verify`). شاشة الدخول واجهة فقط.
+- "تسجيل الخروج" في أسفل الـ sidebar يمسح التوكن ويعود لشاشة الدخول.
 
 ## النشر على Netlify
 
@@ -41,10 +52,12 @@ netlify deploy --prod
 ```
 
 `netlify.toml` مضبوط بـ `publish = "frontend"`، فلن تحتاج أي إعدادات إضافية. الرابط الرئيسي
-يخدم `index.html` مباشرة.
+يخدم `index.html` مباشرة. أضف رابط Netlify في سيرفر الـ backend ضمن `FRONTEND_URL` (CORS).
 
 ## ملاحظات
 
 - لا يوجد real-time/polling في هذه المرحلة — البيانات تُحضَّر عند فتح الصفحة وعند كل تفاعل.
 - عناصر القائمة والرسائل تُبنى بـ `createElement`/`textContent` (ممنوع `innerHTML` مع بيانات
   من الـ backend لتجنب XSS).
+- لا تُحفظ كلمة السر النصية في أي ملف frontend — فقط التوكن المؤقت بعد تسجيل الدخول، ويكون
+  صلاحيته منتهية تلقائيًا بعد 7 أيام (يتطلب إعادة الدخول).

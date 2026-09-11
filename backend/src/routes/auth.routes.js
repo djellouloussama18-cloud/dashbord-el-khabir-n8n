@@ -1,35 +1,46 @@
 const router = require('express').Router();
-const bcrypt = require('bcrypt');
+const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const rateLimit = require('express-rate-limit');
 
-router.post('/login', async (req, res, next) => {
+// أقصى 5 محاولات تسجيل دخول كل 15 دقيقة لكل IP — للحماية من brute-force.
+// الرسالة عامة بلا تفاصيل عن عدد المحاولات المتبقية.
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req, res) => {
+    res.status(429).json({ error: 'محاولات كثيرة. أعد المحاولة بعد 15 دقيقة.' });
+  },
+});
+
+router.post('/login', loginLimiter, async (req, res, next) => {
   try {
-    const { username, password } = req.body || {};
+    const { password } = req.body || {};
 
-    if (!username || !password) {
-      return res.status(400).json({ error: 'اسم المستخدم وكلمة المرور مطلوبة' });
+    if (typeof password !== 'string' || password.length === 0) {
+      return res.status(401).json({ error: 'كلمة السر غير صحيحة' });
     }
 
-    const adminUsername = process.env.ADMIN_USERNAME || 'admin';
-    const adminHash = process.env.ADMIN_PASSWORD_HASH;
+    const passwordHash = process.env.DASHBOARD_PASSWORD_HASH;
+    const secret = process.env.JWT_SECRET;
+    const expiresIn = process.env.JWT_EXPIRES_IN || '7d';
 
-    if (username !== adminUsername) {
-      return res.status(401).json({ error: 'اسم المستخدم أو كلمة المرور غير صحيحة' });
+    if (!passwordHash) {
+      return res.status(500).json({ error: 'DASHBOARD_PASSWORD_HASH غير مضبوط في السيرفر' });
+    }
+    if (!secret) {
+      return res.status(500).json({ error: 'JWT_SECRET غير مضبوط في السيرفر' });
     }
 
-    if (!adminHash) {
-      return res.status(500).json({ error: 'لم يتم إعداد ADMIN_PASSWORD_HASH في السيرفر' });
-    }
-
-    const match = await bcrypt.compare(password, adminHash);
+    const match = await bcrypt.compare(password, passwordHash);
     if (!match) {
-      return res.status(401).json({ error: 'اسم المستخدم أو كلمة المرور غير صحيحة' });
+      return res.status(401).json({ error: 'كلمة السر غير صحيحة' });
     }
 
-    const secret = process.env.JWT_SECRET || 'secret';
-    const token = jwt.sign({ username }, secret, { expiresIn: '7d' });
-
-    return res.json({ token, username });
+    const token = jwt.sign({ role: 'dashboard' }, secret, { expiresIn });
+    return res.json({ token });
   } catch (err) {
     return next(err);
   }

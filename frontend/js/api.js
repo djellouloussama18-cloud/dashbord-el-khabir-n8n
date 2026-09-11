@@ -1,12 +1,16 @@
-function getApiKey() {
-  return typeof API_KEY === "string" ? API_KEY : "";
+function getToken() {
+  return typeof Auth !== "undefined" ? Auth.getToken() : null;
 }
 
 async function apiFetch(path, options = {}) {
   const { headers, body, ...rest } = options;
   const finalHeaders = { ...(headers || {}) };
 
-  finalHeaders["X-API-Key"] = getApiKey();
+  // المصادقة عبر JWT Bearer token (من localStorage بعد تسجيل الدخول)
+  const token = getToken();
+  if (token) {
+    finalHeaders["Authorization"] = "Bearer " + token;
+  }
   if (body) {
     finalHeaders["Content-Type"] = "application/json";
   }
@@ -23,7 +27,11 @@ async function apiFetch(path, options = {}) {
   }
 
   if (res.status === 401) {
-    throw new Error("خطأ فالمصادقة — تحقق من إعداد API Key فـ config.js");
+    // الجلسة انتهت أو التوكن تلاعب فيه → نمسحه ونرجع لشاشة الدخول فورًا
+    if (typeof Auth !== "undefined") {
+      Auth.handleUnauthorized();
+    }
+    throw new Error("انتهت الجلسة. أعد تسجيل الدخول.");
   }
 
   const text = await res.text();

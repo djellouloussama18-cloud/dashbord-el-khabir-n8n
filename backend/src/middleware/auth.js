@@ -17,24 +17,30 @@ function safeEqual(a, b) {
   return diff === 0;
 }
 
+// الحماية الرئيسية للداشبورد: JWT Bearer token موقّع من السيرفر.
+// التحقق من الصلاحية (expiry) + التوقيع (signature) جميعًا هنا عبر jwt.verify.
 function auth(req, res, next) {
-  // 1. Check JWT Bearer token
+  // 1. JWT Bearer token — الطريقة الأساسية (الداشبورد)
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith('Bearer ')) {
     const token = authHeader.substring(7);
-    const secret = process.env.JWT_SECRET || 'secret';
+    const secret = process.env.JWT_SECRET;
+    if (!secret) {
+      return res.status(500).json({ error: 'JWT_SECRET غير مضبوط في السيرفر' });
+    }
     try {
       const decoded = jwt.verify(token, secret);
       req.user = decoded;
       return next();
     } catch (err) {
-      return res.status(401).json({ error: 'Unauthorized: Invalid or expired token' });
+      return res.status(401).json({ error: 'Unauthorized' });
     }
   }
 
-  // 2. Check x-api-key fallback
+  // 2. X-API-Key — بديل للاستعمال البرمجي فقط (سكريبتات/تكاملات خارجية)،
+  //    ماشي للداشبورد. الداشبورد دائمًا يرسل JWT Bearer.
   const provided = req.headers['x-api-key'];
-  if (expectedKey() && safeEqual(provided, expectedKey())) {
+  if (provided && expectedKey() && safeEqual(provided, expectedKey())) {
     return next();
   }
 
