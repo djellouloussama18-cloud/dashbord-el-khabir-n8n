@@ -23,7 +23,8 @@ router.post('/login', loginLimiter, async (req, res, next) => {
       return res.status(401).json({ error: 'كلمة السر غير صحيحة' });
     }
 
-    const passwordHash = process.env.DASHBOARD_PASSWORD_HASH;
+    // Trim: Render قد يُنزل مسافة/سطرًا زائدًا في نهاية المتغيّر (يكسر الهاش)
+    const passwordHash = (process.env.DASHBOARD_PASSWORD_HASH || '').trim();
     const secret = process.env.JWT_SECRET;
     const expiresIn = process.env.JWT_EXPIRES_IN || '7d';
 
@@ -34,7 +35,10 @@ router.post('/login', loginLimiter, async (req, res, next) => {
       return res.status(500).json({ error: 'JWT_SECRET غير مضبوط في السيرفر' });
     }
 
-    const match = await bcrypt.compare(password, passwordHash);
+    // Trim للمدخلات — المسافات البادئة/التالية لا تُعتبر جزءًا من كلمة السر
+    const plainPassword = password.trim();
+    // bcrypt.compare(النص العادي, الهاش) — الترتيب مهم، معامله الأول هو النص
+    const match = await bcrypt.compare(plainPassword, passwordHash);
     if (!match) {
       return res.status(401).json({ error: 'كلمة السر غير صحيحة' });
     }
