@@ -45,7 +45,10 @@ async function apiFetch(path, options = {}) {
   }
 
   if (!res.ok) {
-    throw new Error((data && data.error) || `خطأ غير متوقع (${res.status})`);
+    const error = new Error((data && data.error) || `خطأ غير متوقع (${res.status})`);
+    error.status = res.status;
+    error.data = data;
+    throw error;
   }
 
   return data;
@@ -120,3 +123,49 @@ const pauseBot = (id, durationMinutes) =>
 
 const getOrder = (id) =>
   apiFetch(`/api/conversations/${encodeURIComponent(id)}/order`);
+
+/* =====================================================
+   POSTS — المنشورات (bot_posts + keywords + comments + hits)
+   ===================================================== */
+
+const getPostsSummary = () => apiFetch("/api/posts/summary");
+
+const listPosts = (params = {}) =>
+  apiFetch("/api/posts" + buildQueryString(params));
+
+const createPost = (body) => apiFetch("/api/posts", { method: "POST", body });
+
+const getPost = (id) => apiFetch("/api/posts/" + encodeURIComponent(id));
+
+const updatePost = (id, body) =>
+  apiFetch("/api/posts/" + encodeURIComponent(id), { method: "PATCH", body });
+
+const deletePost = (id) =>
+  apiFetch("/api/posts/" + encodeURIComponent(id), { method: "DELETE" });
+
+const createKeyword = (postId, body) =>
+  apiFetch(`/api/posts/${encodeURIComponent(postId)}/keywords`, {
+    method: "POST",
+    body,
+  });
+
+const updateKeyword = (keywordId, body) =>
+  apiFetch(`/api/posts/keywords/${encodeURIComponent(keywordId)}`, {
+    method: "PATCH",
+    body,
+  });
+
+const deleteKeyword = (keywordId) =>
+  apiFetch(`/api/posts/keywords/${encodeURIComponent(keywordId)}`, {
+    method: "DELETE",
+  });
+
+const listPostComments = (postId, params = {}) =>
+  apiFetch(
+    `/api/posts/${encodeURIComponent(postId)}/comments` + buildQueryString(params)
+  );
+
+const listPostHits = (postId, params = {}) =>
+  apiFetch(
+    `/api/posts/${encodeURIComponent(postId)}/hits` + buildQueryString(params)
+  );

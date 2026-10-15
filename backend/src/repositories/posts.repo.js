@@ -1,0 +1,433 @@
+const pool = require('../config/db');
+
+/**
+ * أعمدة المنشور + الإحصائيات المجمّعة (keywords / comments / hits)
+ * محسوبة فـ SQL عبر LEFT JOIN LATERAL — بلا N+1.
+ */
+const POST_COLUMNS = `
+       p.id,
+       p.title,
+       p.post_url,
+       p.post_key,
+       p.post_type,
+       p.comment_reply_variants,
+       p.is_active,
+       p.created_at,
+       p.updated_at,
+       COALESCE(kk.keywords_count, 0)::int AS keywords_count,
+       COALESCE(kk.active_keywords_count, 0)::int AS active_keywords_count,
+       COALESCE(cc.comments_total, 0)::int AS comments_total,
+       COALESCE(cc.comments_replied, 0)::int AS comments_replied,
+       COALESCE(cc.comments_failed, 0)::int AS comments_failed,
+       COALESCE(cc.comments_pending, 0)::int AS comments_pending,
+       COALESCE(cc.comments_skipped, 0)::int AS comments_skipped,
+       COALESCE(hh.hits_total, 0)::int AS hits_total,
+       COALESCE(hh.hits_failed, 0)::int AS hits_failed`;
+
+const POST_JOINS = `
+      LEFT JOIN LATERAL (
+        SELECT COUNT(*)::int AS keywords_count,
+               COUNT(*) FILTER (WHERE k.is_active)::int AS active_keywords_count
+          FROM bot_post_keywords k
+         WHERE k.post_id = p.id
+      ) kk ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT COUNT(*)::int AS comments_total,
+               COUNT(*) FILTER (WHERE c.reply_status = 'replied')::int AS comments_replied,
+               COUNT(*) FILTER (WHERE c.reply_status = 'failed')::int AS comments_failed,
+               COUNT(*) FILTER (WHERE c.reply_status = 'pending')::int AS comments_pending,
+               COUNT(*) FILTER (WHERE c.reply_status = 'skipped')::int AS comments_skipped
+          FROM bot_post_comments c
+         WHERE c.post_id = p.id
+      ) cc ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT COUNT(*)::int AS hits_total,
+               COUNT(*) FILTER (WHERE h.dm_status = 'failed')::int AS hits_failed
+          FROM bot_keyword_hits h
+          JOIN bot_post_keywords k2 ON k2.id = h.keyword_id
+         WHERE k2.post_id = p.id
+      ) hh ON TRUE`;
+
+/** قائمة المنشورات مع بحث/فلترة وترقيم. */
+async function listPosts({ search, status, page, limit }) {
+  const conditions = [];
+  const params = [];
+  let p = 1;
+
+  if (search && search.trim() !== '') {
+    const pattern = `%${search.trim()}%`;
+    conditions.push(
+      `(p.title ILIKE $${p} OR p.post_url ILIKE $${p} OR p.post_key ILIKE $${p})`
+    );
+    params.push(pattern);
+    p += 1;
+  }
+
+  if (status === 'active') conditions.push('p.is_active = TRUE');
+  else if (status === 'inactive') conditions.push('p.is_active = FALSE');
+
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  const offset = (page - 1) * limit;
+  params.push(limit, offset);
+
+  const query = `
+    SELECT ${POST_COLUMNS},
+           COUNT(*) OVER () AS __total
+      FROM bot_posts p
+      ${POST_JOINS}
+      ${where}
+     ORDER BY p.created_at DESC
+     LIMIT $${p} OFFSET $${p + 1}`;
+
+  const result = await pool.query(query, params);
+  const total = result.rows.length ? Number(result.rows[0].__total) : 0;
+  const rows = result.rows.map(({ __total, ...row }) => row);
+  return { rows, total };
+}
+
+/** منشور واحد + إحصائياته. */
+async function getPostById(id) {
+  const query = `
+    SELECT ${POST_COLUMNS}
+      FROM bot_posts p
+      ${POST_JOINS}
+     WHERE p.id = $1::bigint`;
+  const result = await pool.query(query, [id]);
+  return result.rows[0] || null;
+}
+
+/** إحصائيات مجمّعة للمنشور نفسه (نفس شكل القائمة). */
+function statsFromPost(post) {
+  return {
+    keywords_count: post.keywords_count,
+    active_keywords_count: post.active_keywords_count,
+    comments_total: post.comments_total,
+    comments_replied: post.comments_replied,
+    comments_failed: post.comments_failed,
+    comments_pending: post.comments_pending,
+    comments_skipped: post.comments_skipped,
+    hits_total: post.hits_total,
+    hits_failed: post.hits_failed,
+  };
+}
+
+/** إيجاد منشور بنفس post_key (لكشف التكرار). */
+async function findPostByKey(postKey, excludeId = null) {
+  const result = await pool.query(
+    `SELECT id FROM bot_posts
+      WHERE post_key = $1
+        AND ($2::bigint IS NULL OR id <> $2::bigint)
+      LIMIT 1`,
+    [postKey, excludeId]
+  );
+  return result.rows[0] || null;
+}
+
+async function createPost({ title, postUrl, postKey, postType, variants, isActive }) {
+  const result = await pool.query(
+    `INSERT INTO bot_posts (title, post_url, post_key, post_type, comment_reply_variants, is_active)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     RETURNING id, title, post_url, post_key, post_type, comment_reply_variants, is_active, created_at, updated_at`,
+    [title, postUrl, postKey, postType, variants, isActive]
+  );
+  return result.rows[0];
+}
+
+const POST_UPDATE_COLUMNS = {
+  title: 'title',
+  post_url: 'post_url',
+  post_key: 'post_key',
+  post_type: 'post_type',
+  comment_reply_variants: 'comment_reply_variants',
+  is_active: 'is_active',
+};
+
+/** تعديل ديناميكي — دائمًا updated_at = NOW(). */
+async function updatePost(id, fields) {
+  const sets = [];
+  const params = [];
+  let p = 1;
+
+  Object.keys(POST_UPDATE_COLUMNS).forEach((key) => {
+    if (Object.prototype.hasOwnProperty.call(fields, key)) {
+      sets.push(`${POST_UPDATE_COLUMNS[key]} = $${p}`);
+      params.push(fields[key]);
+      p += 1;
+    }
+  });
+
+  sets.push('updated_at = NOW()');
+  params.push(id);
+
+  const result = await pool.query(
+    `UPDATE bot_posts
+        SET ${sets.join(', ')}
+      WHERE id = $${p}::bigint
+      RETURNING id, title, post_url, post_key, post_type, comment_reply_variants, is_active, created_at, updated_at`,
+    params
+  );
+  return result.rows[0] || null;
+}
+
+/** حذف المنشور وكلماته داخل معاملة واحدة (الفشل عبر FK يرمي 23503). */
+async function deletePost(id) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('DELETE FROM bot_post_keywords WHERE post_id = $1::bigint', [id]);
+    const result = await client.query(
+      'DELETE FROM bot_posts WHERE id = $1::bigint RETURNING id',
+      [id]
+    );
+    await client.query('COMMIT');
+    return result.rows[0] || null;
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+/* ============================ KEYWORDS ============================ */
+
+/** تطبيع الكلمة عبر دالة SQL (ممنوع إعادة تنفيذها فـ JS). */
+async function normalizeKeyword(keyword) {
+  const result = await pool.query('SELECT public.normalize_keyword($1::text) AS n', [keyword]);
+  return result.rows[0] ? result.rows[0].n : null;
+}
+
+/**
+ * كشف تعارض كلمة مفتاحية نشطة تنتمي لمنشور نشط (عقد n8n #3).
+ * excludeKeywordId لاستثناء الكلمة نفسها عند التعديل.
+ */
+async function findConflictingKeyword(normalized, excludeKeywordId = null) {
+  const result = await pool.query(
+    `SELECT p.title, p.post_url
+       FROM bot_post_keywords k
+       JOIN bot_posts p ON p.id = k.post_id
+      WHERE k.keyword_normalized = $1
+        AND k.is_active = TRUE
+        AND p.is_active = TRUE
+        AND ($2::bigint IS NULL OR k.id <> $2::bigint)
+      LIMIT 1`,
+    [normalized, excludeKeywordId]
+  );
+  return result.rows[0] || null;
+}
+
+/**
+ * كشف تعارض عند إعادة تفعيل المنشور: هل توجد كلمة نشطة فـ هذا المنشور
+ * تتشارك نفس keyword_normalized مع كلمة نشطة فـ منشور آخر نشط؟
+ */
+async function findReactivationConflict(postId) {
+  const result = await pool.query(
+    `SELECT o.title, o.post_url, k.keyword
+       FROM bot_post_keywords k
+       JOIN bot_post_keywords k2
+         ON k2.keyword_normalized = k.keyword_normalized
+        AND k2.is_active = TRUE
+        AND k2.id <> k.id
+       JOIN bot_posts o ON o.id = k2.post_id AND o.is_active = TRUE
+      WHERE k.post_id = $1::bigint
+        AND k.is_active = TRUE
+      LIMIT 1`,
+    [postId]
+  );
+  return result.rows[0] || null;
+}
+
+async function listKeywords(postId) {
+  const result = await pool.query(
+    `SELECT id, post_id, keyword, keyword_normalized, dm_message,
+            stop_bot_after_send, is_active, hits_count, created_at, updated_at
+       FROM bot_post_keywords
+      WHERE post_id = $1::bigint
+      ORDER BY id ASC`,
+    [postId]
+  );
+  return result.rows;
+}
+
+async function getKeywordById(id) {
+  const result = await pool.query(
+    `SELECT k.id, k.post_id, k.keyword, k.keyword_normalized, k.dm_message,
+            k.stop_bot_after_send, k.is_active, k.hits_count, k.created_at, k.updated_at,
+            p.title AS post_title, p.post_url AS post_url, p.is_active AS post_is_active
+       FROM bot_post_keywords k
+       JOIN bot_posts p ON p.id = k.post_id
+      WHERE k.id = $1::bigint`,
+    [id]
+  );
+  return result.rows[0] || null;
+}
+
+async function createKeyword(postId, data) {
+  const result = await pool.query(
+    `INSERT INTO bot_post_keywords
+       (post_id, keyword, keyword_normalized, dm_message, stop_bot_after_send, is_active)
+     VALUES ($1::bigint, $2, $3, $4, $5, $6)
+     RETURNING id, post_id, keyword, keyword_normalized, dm_message,
+               stop_bot_after_send, is_active, hits_count, created_at, updated_at`,
+    [postId, data.keyword, data.keywordNormalized, data.dmMessage, data.stopBotAfterSend, data.isActive]
+  );
+  return result.rows[0];
+}
+
+const KEYWORD_UPDATE_COLUMNS = {
+  keyword: 'keyword',
+  keyword_normalized: 'keyword_normalized',
+  dm_message: 'dm_message',
+  stop_bot_after_send: 'stop_bot_after_send',
+  is_active: 'is_active',
+};
+
+async function updateKeyword(id, fields) {
+  const sets = [];
+  const params = [];
+  let p = 1;
+
+  Object.keys(KEYWORD_UPDATE_COLUMNS).forEach((key) => {
+    if (Object.prototype.hasOwnProperty.call(fields, key)) {
+      sets.push(`${KEYWORD_UPDATE_COLUMNS[key]} = $${p}`);
+      params.push(fields[key]);
+      p += 1;
+    }
+  });
+
+  sets.push('updated_at = NOW()');
+  params.push(id);
+
+  const result = await pool.query(
+    `UPDATE bot_post_keywords
+        SET ${sets.join(', ')}
+      WHERE id = $${p}::bigint
+      RETURNING id, post_id, keyword, keyword_normalized, dm_message,
+                stop_bot_after_send, is_active, hits_count, created_at, updated_at`,
+    params
+  );
+  return result.rows[0] || null;
+}
+
+async function deleteKeyword(id) {
+  const result = await pool.query(
+    'DELETE FROM bot_post_keywords WHERE id = $1::bigint RETURNING id',
+    [id]
+  );
+  return result.rows[0] || null;
+}
+
+/* ============================ COMMENTS ============================ */
+
+async function countCommentsByStatus(postId) {
+  const result = await pool.query(
+    `SELECT COUNT(*)::int AS total,
+            COUNT(*) FILTER (WHERE reply_status = 'pending')::int AS pending,
+            COUNT(*) FILTER (WHERE reply_status = 'replied')::int AS replied,
+            COUNT(*) FILTER (WHERE reply_status = 'failed')::int AS failed,
+            COUNT(*) FILTER (WHERE reply_status = 'skipped')::int AS skipped
+       FROM bot_post_comments
+      WHERE post_id = $1::bigint`,
+    [postId]
+  );
+  return result.rows[0] || { total: 0, pending: 0, replied: 0, failed: 0, skipped: 0 };
+}
+
+async function listComments(postId, { status, search, page, limit }) {
+  const conditions = ['post_id = $1::bigint'];
+  const params = [postId];
+  let p = 2;
+
+  if (['pending', 'replied', 'failed', 'skipped'].includes(status)) {
+    conditions.push(`reply_status = $${p}`);
+    params.push(status);
+    p += 1;
+  }
+
+  if (search && search.trim() !== '') {
+    const pattern = `%${search.trim()}%`;
+    conditions.push(`(commenter_name ILIKE $${p} OR comment_text ILIKE $${p})`);
+    params.push(pattern);
+    p += 1;
+  }
+
+  const offset = (page - 1) * limit;
+  params.push(limit, offset);
+
+  const query = `
+    SELECT id, post_id, comment_id, commenter_id, commenter_name, comment_text,
+           reply_status, reply_text, replied_at, error_message, created_at,
+           COUNT(*) OVER () AS __total
+      FROM bot_post_comments
+     WHERE ${conditions.join(' AND ')}
+     ORDER BY created_at DESC
+     LIMIT $${p} OFFSET $${p + 1}`;
+
+  const result = await pool.query(query, params);
+  const total = result.rows.length ? Number(result.rows[0].__total) : 0;
+  const rows = result.rows.map(({ __total, ...row }) => row);
+  return { rows, total };
+}
+
+/* ============================== HITS ============================== */
+
+async function listHits(postId, { page, limit }) {
+  const offset = (page - 1) * limit;
+  const query = `
+    SELECT h.id,
+           k.keyword,
+           h.client_id,
+           cs.customer_name,
+           h.matched_text,
+           h.dm_status,
+           h.created_at,
+           COUNT(*) OVER () AS __total
+      FROM bot_keyword_hits h
+      JOIN bot_post_keywords k ON k.id = h.keyword_id
+      LEFT JOIN conversation_state cs ON cs.client_id = h.client_id::text
+     WHERE k.post_id = $1::bigint
+     ORDER BY h.created_at DESC
+     LIMIT $2 OFFSET $3`;
+
+  const result = await pool.query(query, [postId, limit, offset]);
+  const total = result.rows.length ? Number(result.rows[0].__total) : 0;
+  const rows = result.rows.map(({ __total, ...row }) => row);
+  return { rows, total };
+}
+
+/* ============================ SUMMARY ============================ */
+
+async function getSummary() {
+  const result = await pool.query(
+    `SELECT
+       (SELECT COUNT(*)::int FROM bot_posts) AS total_posts,
+       (SELECT COUNT(*)::int FROM bot_posts WHERE is_active) AS active_posts,
+       (SELECT COUNT(*)::int FROM bot_post_comments) AS total_comments,
+       (SELECT COUNT(*)::int FROM bot_post_comments WHERE reply_status = 'replied') AS replied_comments,
+       (SELECT COUNT(*)::int FROM bot_post_comments WHERE reply_status = 'failed') AS failed_comments,
+       (SELECT COUNT(*)::int FROM bot_keyword_hits) AS total_hits`
+  );
+  return result.rows[0];
+}
+
+module.exports = {
+  listPosts,
+  getPostById,
+  statsFromPost,
+  findPostByKey,
+  createPost,
+  updatePost,
+  deletePost,
+  normalizeKeyword,
+  findConflictingKeyword,
+  findReactivationConflict,
+  listKeywords,
+  getKeywordById,
+  createKeyword,
+  updateKeyword,
+  deleteKeyword,
+  countCommentsByStatus,
+  listComments,
+  listHits,
+  getSummary,
+};

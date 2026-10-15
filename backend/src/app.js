@@ -13,6 +13,7 @@ const statsRoutes = require('./routes/stats.routes');
 const ordersRoutes = require('./routes/orders.routes');
 const analyticsRoutes = require('./routes/analytics.routes');
 const contactsRoutes = require('./routes/contacts.routes');
+const postsRoutes = require('./routes/posts.routes');
 const errorHandler = require('./middleware/errorHandler');
 
 // خطأ CORS يتجاوز السياق العادي (err بلا status) — نعالجه قبل errorHandler العام
@@ -55,6 +56,7 @@ app.use('/api/stats', auth, statsRoutes);
 app.use('/api/orders', auth, ordersRoutes);
 app.use('/api/analytics', auth, analyticsRoutes);
 app.use('/api/contacts', auth, contactsRoutes);
+app.use('/api/posts', auth, postsRoutes);
 
 app.use(express.static(path.join(__dirname, '../../frontend')));
 
