@@ -304,7 +304,7 @@ const PostsPage = {
       <div class="posts-page" dir="rtl">
         <header class="posts-header">
           <div class="posts-header-text">
-            <h2 class="posts-title">المنشورات</h2>
+            <h2 class="posts-title">Auto Comments</h2>
             <span class="posts-subtitle">إدارة منشورات فيسبوك التي يرد عليها البوت في التعليقات</span>
           </div>
           <button type="button" class="posts-primary-btn" id="posts-add-btn">إضافة منشور</button>
