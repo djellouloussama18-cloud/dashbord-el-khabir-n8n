@@ -648,9 +648,13 @@ const PostsPage = {
       }
 
       submitBtn.disabled = true;
-      submitBtn.textContent = "جارٍ الإنشاء…";
+      submitBtn.textContent = "جارٍ فحص الرابط...";
       try {
         const created = await createPost(payload);
+
+        if (created.resolved_from) {
+          this.showToast("تم تحويل الرابط المختصر إلى الرابط الكامل تلقائيًا", "info");
+        }
 
         let keywordFailed = false;
         const kw = kwInput.value.trim();

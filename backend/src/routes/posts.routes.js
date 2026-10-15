@@ -1,20 +1,12 @@
 const router = require('express').Router();
 const postsRepo = require('../repositories/posts.repo');
 const { extractPostKey, detectPostType } = require('../utils/postKey');
-
-const ALLOWED_HOSTS = [
-  'facebook.com',
-  'www.facebook.com',
-  'm.facebook.com',
-  'web.facebook.com',
-  'fb.watch',
-  'fb.com',
-];
+const { resolveFacebookUrl, isAllowedHost } = require('../utils/resolveShortUrl');
 
 const EMPTY_NORMALIZED_MESSAGE =
   'تعذّر تطبيع الكلمة المفتاحية (الكلمة فارغة أو غير صالحة).';
 const MANUAL_KEY_MESSAGE =
-  'تعذّر استخراج معرّف المنشور من الرابط. استعمل الرابط الكامل للمنشور/الريل (وليس رابط المشاركة المختصر) أو أدخل المعرّف يدويًا.';
+  'تعذّر تحويل الرابط المختصر إلى الرابط الكامل. افتح المنشور في المتصفح وانسخ الرابط الكامل من شريط العنوان، أو أدخل المعرّف يدويًا.';
 const INVALID_URL_MESSAGE = 'الرابط غير صالح، يجب أن يكون رابط فيسبوك';
 const DUPLICATE_POST_MESSAGE = 'هذا المنشور مضاف مسبقًا';
 const DUPLICATE_KEYWORD_MESSAGE = 'هذه الكلمة المفتاحية مضافة مسبقًا في هذا المنشور';
@@ -37,7 +29,7 @@ function isValidFacebookUrl(raw) {
     return false;
   }
   if (url.protocol !== 'https:') return false;
-  return ALLOWED_HOSTS.includes(url.hostname.toLowerCase());
+  return isAllowedHost(url.hostname);
 }
 
 /** صيغ الرد: قائمة نصوص غير فارغة، بحد 10، كل واحدة ≤ 500، بلا تكرار. */
@@ -116,6 +108,8 @@ router.post('/', async (req, res, next) => {
     }
 
     let postKey = null;
+    let resolvedUrl = postUrl;
+    let resolvedFrom = null;
     const manualKey = trimString(body.post_key);
     if (manualKey) {
       if (!/^\d{8,}$/.test(manualKey)) {
@@ -123,13 +117,18 @@ router.post('/', async (req, res, next) => {
       }
       postKey = manualKey;
     } else {
-      postKey = extractPostKey(postUrl);
+      const resolution = await resolveFacebookUrl(postUrl);
+      if (resolution.resolved) {
+        resolvedUrl = resolution.url;
+        resolvedFrom = postUrl;
+      }
+      postKey = extractPostKey(resolvedUrl);
       if (!postKey) {
         return res.status(422).json({ error: MANUAL_KEY_MESSAGE, needs_manual_key: true });
       }
     }
 
-    const postType = detectPostType(postUrl);
+    const postType = detectPostType(resolvedUrl);
 
     let title = null;
     if (body.title !== undefined && body.title !== null) {
@@ -160,12 +159,15 @@ router.post('/', async (req, res, next) => {
 
     const post = await postsRepo.createPost({
       title,
-      postUrl,
+      postUrl: resolvedUrl,
       postKey,
       postType,
       variants: variants.value,
       isActive,
     });
+    if (resolvedFrom) {
+      return res.status(201).json({ ...post, resolved_from: resolvedFrom });
+    }
     return res.status(201).json(post);
   } catch (err) {
     if (err.code === '23505') {
@@ -396,8 +398,10 @@ router.patch('/:id', async (req, res, next) => {
       fields.title = t === '' ? null : t;
     }
 
+    const urlSent = Object.prototype.hasOwnProperty.call(body, 'post_url');
     let newUrl = post.post_url;
-    if (Object.prototype.hasOwnProperty.call(body, 'post_url')) {
+    let resolvedFrom = null;
+    if (urlSent) {
       newUrl = trimString(body.post_url);
       if (!newUrl || !isValidFacebookUrl(newUrl)) {
         return res.status(400).json({ error: INVALID_URL_MESSAGE });
@@ -414,7 +418,13 @@ router.patch('/:id', async (req, res, next) => {
       }
       newKey = mk;
       fields.post_key = mk;
-    } else if (Object.prototype.hasOwnProperty.call(body, 'post_url') && !manualKeySent) {
+    } else if (urlSent && !manualKeySent) {
+      const resolution = await resolveFacebookUrl(newUrl);
+      if (resolution.resolved) {
+        resolvedFrom = newUrl;
+        newUrl = resolution.url;
+        fields.post_url = newUrl;
+      }
       const extracted = extractPostKey(newUrl);
       if (!extracted) {
         return res.status(422).json({ error: MANUAL_KEY_MESSAGE, needs_manual_key: true });
@@ -423,7 +433,7 @@ router.patch('/:id', async (req, res, next) => {
       fields.post_key = extracted;
     }
 
-    if (Object.prototype.hasOwnProperty.call(body, 'post_url')) {
+    if (urlSent) {
       fields.post_type = detectPostType(newUrl);
     }
 
@@ -459,6 +469,9 @@ router.patch('/:id', async (req, res, next) => {
     }
 
     const updated = await postsRepo.updatePost(id, fields);
+    if (resolvedFrom) {
+      return res.json({ ...updated, resolved_from: resolvedFrom });
+    }
     return res.json(updated);
   } catch (err) {
     if (err.code === '23505') {
