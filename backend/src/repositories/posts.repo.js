@@ -395,6 +395,54 @@ async function listHits(postId, { page, limit }) {
   return { rows, total };
 }
 
+/* ============================ ROUND-ROBIN VARIANTS ============================ */
+
+/**
+ * يختار الرد التالي بالتناوب (Round-Robin) بشكل atomic.
+ * يعيد نص الرد، أو null إذا لم تكن هناك صيغ.
+ */
+async function getNextVariant(postId) {
+  // CTE atomic: نحسب الـ index الجديد ونحدّث ونرجع النص في خطوة واحدة
+  const result = await pool.query(
+    `WITH updated AS (
+       UPDATE bot_posts
+          SET comment_reply_index =
+                CASE
+                  WHEN array_length(comment_reply_variants, 1) IS NULL OR
+                       array_length(comment_reply_variants, 1) = 0
+                  THEN 0
+                  ELSE (comment_reply_index + 1) % array_length(comment_reply_variants, 1)
+                END,
+              updated_at = NOW()
+        WHERE id = $1::bigint
+       RETURNING comment_reply_variants, comment_reply_index
+     )
+     SELECT
+       comment_reply_variants,
+       comment_reply_index,
+       CASE
+         WHEN array_length(comment_reply_variants, 1) IS NULL OR
+              array_length(comment_reply_variants, 1) = 0
+         THEN NULL
+         ELSE comment_reply_variants[comment_reply_index + 1]
+       END AS variant_text
+     FROM updated`,
+    [postId]
+  );
+  if (!result.rows.length) return null;
+  return result.rows[0].variant_text || null;
+}
+
+/**
+ * يعيد comment_reply_index إلى 0 عند تعديل صيغ الرد.
+ */
+async function resetVariantIndex(postId) {
+  await pool.query(
+    `UPDATE bot_posts SET comment_reply_index = 0, updated_at = NOW() WHERE id = $1::bigint`,
+    [postId]
+  );
+}
+
 /* ============================ SUMMARY ============================ */
 
 async function getSummary() {
@@ -430,4 +478,6 @@ module.exports = {
   listComments,
   listHits,
   getSummary,
+  getNextVariant,
+  resetVariantIndex,
 };

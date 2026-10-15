@@ -656,6 +656,10 @@ const PostsPage = {
           this.showToast("تم تحويل الرابط المختصر إلى الرابط الكامل تلقائيًا", "info");
         }
 
+        if (created.key_resolved_via) {
+          this.showToast("تم استخراج المعرّف الرقمي للمنشور تلقائيًا", "info");
+        }
+
         let keywordFailed = false;
         const kw = kwInput.value.trim();
         if (kw) {
@@ -870,6 +874,52 @@ const PostsPage = {
     wrap.appendChild(this.buildField("العنوان", titleInput));
     wrap.appendChild(this.buildField("رابط المنشور", urlInput));
     wrap.appendChild(this.buildField("صيغ رد التعليق", variants));
+
+    // ── مؤشر Round-Robin ──
+    const variantCount = (post.comment_reply_variants || []).length;
+    if (variantCount > 0) {
+      const rrBox = this.el("div", "variant-rr-box");
+      const rrInfo = this.el("div", "variant-rr-info");
+      rrInfo.appendChild(this.el("span", "variant-rr-icon", "🔄"));
+      rrInfo.appendChild(
+        this.el("span", "variant-rr-label",
+          "التوزيع الدوري مفعّل — " + variantCount + " صيغ رد")
+      );
+      const rrIndex = this.el("span", "variant-rr-index",
+        "الرد التالي: رقم " + ((post.comment_reply_index || 0) + 1) + " من " + variantCount
+      );
+      rrBox.appendChild(rrInfo);
+      rrBox.appendChild(rrIndex);
+
+      const previewBtn = this.el("button", "notes-btn ghost variant-preview-btn", "معاينة الرد التالي ▶");
+      previewBtn.type = "button";
+      const previewResult = this.el("div", "variant-preview-result hidden");
+      rrBox.appendChild(previewBtn);
+      rrBox.appendChild(previewResult);
+      wrap.appendChild(rrBox);
+
+      previewBtn.addEventListener("click", async () => {
+        previewBtn.disabled = true;
+        previewBtn.textContent = "جارٍ الجلب…";
+        try {
+          const res = await getNextPostVariant(post.id);
+          previewResult.textContent = res.variant || "(لا توجد صيغ)";
+          previewResult.classList.remove("hidden");
+          // تحديث مؤشر الرد التالي
+          const total = (post.comment_reply_variants || []).length;
+          const currentIdx = (post.comment_reply_index || 0) + 1;
+          post.comment_reply_index = currentIdx % total;
+          rrIndex.textContent =
+            "الرد التالي: رقم " + ((post.comment_reply_index || 0) + 1) + " من " + total;
+        } catch (err) {
+          this.showToast(err.message || "تعذّر جلب الرد", "error");
+        } finally {
+          previewBtn.disabled = false;
+          previewBtn.textContent = "معاينة الرد التالي ▶";
+        }
+      });
+    }
+
     wrap.appendChild(manualField);
     wrap.appendChild(activeRow);
     wrap.appendChild(errorBox);

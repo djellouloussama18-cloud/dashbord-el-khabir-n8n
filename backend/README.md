@@ -50,6 +50,23 @@ openssl rand -hex 32
 أصل الواجهة المنشورة (Netlify URL) — يُقيَّد به CORS. ممنوع `*` في الإنتاج؛ إن نشرت الواجهة
 على أكثر من دومين، اكتبها مفصولة بفواصل.
 
+### `FB_PAGE_ACCESS_TOKEN` و `FB_GRAPH_VERSION`
+
+يُستعملان لاستخراج **المعرّف الرقمي** للمنشور تلقائيًا عندما يحتوي الرابط على رمز `pfbid`
+بدل المعرّف الرقمي (مثال: `.../posts/pfbid0AbC...` أو `story_fbid=pfbid0AbC...`).
+
+- `FB_PAGE_ACCESS_TOKEN`: رمز وصول الصفحة (Page access token) — **نفس الرمز الذي يستعمله n8n**.
+  - **اختياري لكن موصى به**: إن لم يُضبط، تبقى الميزة **معطّلة بصمت** ويعمل كل شيء كما قبل
+    (يُطلب المعرّف يدويًا عند الحاجة). لا يُرسَل هذا الرمز أبدًا إلى الواجهة ولا يُسجَّل في اللوغات،
+    ويُمرَّر فقط في ترويسة `Authorization: Bearer`.
+- `FB_GRAPH_VERSION`: إصدار Graph API المستعمل في هذا البحث. اختياري، والقيمة الافتراضية `v21.0`.
+
+طريقة العمل عند إنشاء/تعديل منشور بلا معرّف يدوي:
+`extractPostKey` (معرّف رقمي مباشر) ← محوّل الروابط المختصرة (`resolveShortUrl`) ←
+`resolveNumericPostId` (بحث Graph API عن `pfbid`). عند النجاح يُخزَّن المعرّف الرقمي ويُرجَع
+`{ key_resolved_via: "graph-direct" | "graph-scan" }` في الاستجابة، مع **الإبقاء على الرابط كما
+أدخله المستخدم**.
+
 ## التشغيل محليًا
 
 ```bash
@@ -120,7 +137,12 @@ backend/
 │   │   ├── stats.routes.js
 │   │   ├── analytics.routes.js
 │   │   ├── contacts.routes.js
-│   │   └── orders.routes.js
+│   │   ├── orders.routes.js
+│   │   └── posts.routes.js
+│   ├── utils/
+│   │   ├── postKey.js
+│   │   ├── resolveShortUrl.js
+│   │   └── resolveNumericPostId.js
 │   ├── app.js
 │   └── server.js
 ├── .env.example

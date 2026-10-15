@@ -2,11 +2,20 @@ const router = require('express').Router();
 const postsRepo = require('../repositories/posts.repo');
 const { extractPostKey, detectPostType } = require('../utils/postKey');
 const { resolveFacebookUrl, isAllowedHost } = require('../utils/resolveShortUrl');
+const {
+  resolveNumericPostId,
+  extractPfbid,
+  isGraphConfigured,
+} = require('../utils/resolveNumericPostId');
 
 const EMPTY_NORMALIZED_MESSAGE =
   'تعذّر تطبيع الكلمة المفتاحية (الكلمة فارغة أو غير صالحة).';
 const MANUAL_KEY_MESSAGE =
   'تعذّر تحويل الرابط المختصر إلى الرابط الكامل. افتح المنشور في المتصفح وانسخ الرابط الكامل من شريط العنوان، أو أدخل المعرّف يدويًا.';
+const PFBID_MANUAL_KEY_MESSAGE =
+  'تعذّر استخراج المعرّف الرقمي لهذا المنشور تلقائيًا. علّق على المنشور بحساب آخر وخذ الجزء الذي بعد _ من post_id في n8n، أو أدخله يدويًا.';
+const GRAPH_DISABLED_NOTE =
+  ' (البحث التلقائي غير مفعّل: لم يتم ضبط FB_PAGE_ACCESS_TOKEN)';
 const INVALID_URL_MESSAGE = 'الرابط غير صالح، يجب أن يكون رابط فيسبوك';
 const DUPLICATE_POST_MESSAGE = 'هذا المنشور مضاف مسبقًا';
 const DUPLICATE_KEYWORD_MESSAGE = 'هذه الكلمة المفتاحية مضافة مسبقًا في هذا المنشور';
@@ -65,6 +74,22 @@ function trimString(value) {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+/** رسالة 422 المناسبة: خاصة بـ pfbid إن كان الرابط يحتويه، مع تنبيه إن كان البحث معطّلًا. */
+function manualKeyMessageFor(url) {
+  if (!extractPfbid(url)) return MANUAL_KEY_MESSAGE;
+  return isGraphConfigured()
+    ? PFBID_MANUAL_KEY_MESSAGE
+    : PFBID_MANUAL_KEY_MESSAGE + GRAPH_DISABLED_NOTE;
+}
+
+/** يحوّل نتيجة resolveNumericPostId إلى قيمة key_resolved_via أو null. */
+function keyResolvedViaOf(result) {
+  if (!result) return null;
+  if (result.via === 'direct') return 'graph-direct';
+  if (result.via === 'scan') return 'graph-scan';
+  return null;
+}
+
 /* ============================== SUMMARY ============================== */
 // ملاحظة: يجب أن يُعلن قبل /:id حتى لا يبتلعه الراوتر.
 
@@ -110,6 +135,7 @@ router.post('/', async (req, res, next) => {
     let postKey = null;
     let resolvedUrl = postUrl;
     let resolvedFrom = null;
+    let keyResolvedVia = null;
     const manualKey = trimString(body.post_key);
     if (manualKey) {
       if (!/^\d{8,}$/.test(manualKey)) {
@@ -123,8 +149,15 @@ router.post('/', async (req, res, next) => {
         resolvedFrom = postUrl;
       }
       postKey = extractPostKey(resolvedUrl);
+      if (!postKey && extractPfbid(resolvedUrl)) {
+        const numeric = await resolveNumericPostId(resolvedUrl);
+        if (numeric) {
+          postKey = numeric.post_key;
+          keyResolvedVia = keyResolvedViaOf(numeric);
+        }
+      }
       if (!postKey) {
-        return res.status(422).json({ error: MANUAL_KEY_MESSAGE, needs_manual_key: true });
+        return res.status(422).json({ error: manualKeyMessageFor(resolvedUrl), needs_manual_key: true });
       }
     }
 
@@ -165,8 +198,11 @@ router.post('/', async (req, res, next) => {
       variants: variants.value,
       isActive,
     });
-    if (resolvedFrom) {
-      return res.status(201).json({ ...post, resolved_from: resolvedFrom });
+    if (resolvedFrom || keyResolvedVia) {
+      const payload = { ...post };
+      if (resolvedFrom) payload.resolved_from = resolvedFrom;
+      if (keyResolvedVia) payload.key_resolved_via = keyResolvedVia;
+      return res.status(201).json(payload);
     }
     return res.status(201).json(post);
   } catch (err) {
@@ -401,6 +437,7 @@ router.patch('/:id', async (req, res, next) => {
     const urlSent = Object.prototype.hasOwnProperty.call(body, 'post_url');
     let newUrl = post.post_url;
     let resolvedFrom = null;
+    let keyResolvedVia = null;
     if (urlSent) {
       newUrl = trimString(body.post_url);
       if (!newUrl || !isValidFacebookUrl(newUrl)) {
@@ -425,9 +462,16 @@ router.patch('/:id', async (req, res, next) => {
         newUrl = resolution.url;
         fields.post_url = newUrl;
       }
-      const extracted = extractPostKey(newUrl);
+      let extracted = extractPostKey(newUrl);
+      if (!extracted && extractPfbid(newUrl)) {
+        const numeric = await resolveNumericPostId(newUrl);
+        if (numeric) {
+          extracted = numeric.post_key;
+          keyResolvedVia = keyResolvedViaOf(numeric);
+        }
+      }
       if (!extracted) {
-        return res.status(422).json({ error: MANUAL_KEY_MESSAGE, needs_manual_key: true });
+        return res.status(422).json({ error: manualKeyMessageFor(newUrl), needs_manual_key: true });
       }
       newKey = extracted;
       fields.post_key = extracted;
@@ -469,8 +513,17 @@ router.patch('/:id', async (req, res, next) => {
     }
 
     const updated = await postsRepo.updatePost(id, fields);
-    if (resolvedFrom) {
-      return res.json({ ...updated, resolved_from: resolvedFrom });
+
+    // إعادة عداد Round-Robin إلى 0 إذا تغيّرت صيغ الرد
+    if (Object.prototype.hasOwnProperty.call(fields, 'comment_reply_variants')) {
+      await postsRepo.resetVariantIndex(id);
+    }
+
+    if (resolvedFrom || keyResolvedVia) {
+      const payload = { ...updated };
+      if (resolvedFrom) payload.resolved_from = resolvedFrom;
+      if (keyResolvedVia) payload.key_resolved_via = keyResolvedVia;
+      return res.json(payload);
     }
     return res.json(updated);
   } catch (err) {
@@ -499,6 +552,32 @@ router.delete('/:id', async (req, res, next) => {
         error: 'لا يمكن حذف المنشور لوجود سجلات مرتبطة به، قم بتعطيله بدلًا من ذلك.',
       });
     }
+    return next(err);
+  }
+});
+
+/* ========================= NEXT VARIANT (Round-Robin) ========================= */
+
+/**
+ * POST /api/posts/:id/next-variant
+ * يختار الرد التالي بالتناوب ويُحدّث العداد في قاعدة البيانات.
+ * الاستجابة: { variant: "نص الرد" } أو { variant: null } إن لم تكن هناك صيغ.
+ */
+router.post('/:id/next-variant', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    if (!isPositiveInt(id)) {
+      return res.status(404).json({ error: 'المنشور غير موجود.' });
+    }
+
+    const post = await postsRepo.getPostById(id);
+    if (!post) {
+      return res.status(404).json({ error: 'المنشور غير موجود.' });
+    }
+
+    const variant = await postsRepo.getNextVariant(id);
+    return res.json({ variant });
+  } catch (err) {
     return next(err);
   }
 });

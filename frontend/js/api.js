@@ -169,3 +169,8 @@ const listPostHits = (postId, params = {}) =>
   apiFetch(
     `/api/posts/${encodeURIComponent(postId)}/hits` + buildQueryString(params)
   );
+
+const getNextPostVariant = (postId) =>
+  apiFetch(`/api/posts/${encodeURIComponent(postId)}/next-variant`, {
+    method: 'POST',
+  });
