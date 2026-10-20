@@ -3526,6 +3526,96 @@ button:focus-visible,
 
 .posts-info-box p { margin-top: 8px; line-height: 1.7; }
 
+/* ---- platform switcher (segmented control) ---- */
+
+.posts-platform-tabs {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  flex-shrink: 0;
+  max-width: 100%;
+}
+
+.posts-platform-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  white-space: nowrap;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.posts-platform-tab:hover { color: var(--text-secondary); }
+
+.posts-platform-tab.active {
+  background: var(--accent-tint-bg);
+  color: var(--accent);
+}
+
+.posts-platform-tab svg { flex-shrink: 0; }
+
+/* ---- platform badge ---- */
+
+.platform-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.platform-badge--facebook {
+  background: rgba(59, 130, 246, 0.12);
+  color: #3B82F6;
+  border: 1px solid rgba(59, 130, 246, 0.35);
+}
+
+.platform-badge--instagram {
+  background: linear-gradient(135deg, rgba(225, 48, 108, 0.16), rgba(131, 58, 180, 0.16));
+  color: #E1306C;
+  border: 1px solid rgba(225, 48, 108, 0.35);
+}
+
+.chat-header-name .platform-badge,
+.conv-item-top .platform-badge {
+  margin-inline-start: 6px;
+  padding: 1px 7px;
+  font-size: 10px;
+  vertical-align: middle;
+}
+
+/* ---- instagram info note ---- */
+
+.posts-info-note {
+  padding: 10px 14px;
+  margin-bottom: 4px;
+  background: rgba(225, 48, 108, 0.07);
+  border: 1px solid rgba(225, 48, 108, 0.25);
+  border-radius: var(--radius-md);
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.7;
+}
+
+/* ---- read-only platform row (settings) ---- */
+
+.posts-platform-readonly {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+}
+
 /* ---- stat card mods ---- */
 
 .stat-card--post-total::before     { background: var(--text-primary); opacity: 0.2; }
@@ -4189,6 +4279,8 @@ button:focus-visible,
   .posts-page { padding: 16px; }
   .posts-header { flex-direction: column; align-items: stretch; }
   .posts-primary-btn { width: 100%; }
+  .posts-platform-tabs { align-self: stretch; justify-content: stretch; }
+  .posts-platform-tab { flex: 1; justify-content: center; }
   .posts-toolbar { flex-direction: column; align-items: stretch; }
   .posts-search-box { min-width: 0; }
   .posts-select { width: 100%; }

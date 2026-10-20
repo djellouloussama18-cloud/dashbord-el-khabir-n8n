@@ -128,7 +128,8 @@ const getOrder = (id) =>
    POSTS — المنشورات (bot_posts + keywords + comments + hits)
    ===================================================== */
 
-const getPostsSummary = () => apiFetch("/api/posts/summary");
+const getPostsSummary = (platform = "facebook") =>
+  apiFetch("/api/posts/summary" + buildQueryString({ platform }));
 
 const listPosts = (params = {}) =>
   apiFetch("/api/posts" + buildQueryString(params));

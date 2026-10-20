@@ -7,6 +7,15 @@ const {
   extractPfbid,
   isGraphConfigured,
 } = require('../utils/resolveNumericPostId');
+const {
+  STORIES_UNSUPPORTED_MESSAGE,
+  isValidInstagramUrl,
+  isInstagramStoriesUrl,
+  extractInstagramShortcode,
+  detectInstagramPostType,
+  isValidInstagramKey,
+  stripInstagramTrackingParams,
+} = require('../utils/instagram');
 
 const EMPTY_NORMALIZED_MESSAGE =
   'تعذّر تطبيع الكلمة المفتاحية (الكلمة فارغة أو غير صالحة).';
@@ -17,8 +26,27 @@ const PFBID_MANUAL_KEY_MESSAGE =
 const GRAPH_DISABLED_NOTE =
   ' (البحث التلقائي غير مفعّل: لم يتم ضبط FB_PAGE_ACCESS_TOKEN)';
 const INVALID_URL_MESSAGE = 'الرابط غير صالح، يجب أن يكون رابط فيسبوك';
+const INVALID_INSTAGRAM_URL_MESSAGE =
+  'الرابط غير صالح، يجب أن يكون رابط إنستغرام صالح (instagram.com).';
+const INSTAGRAM_MANUAL_KEY_MESSAGE =
+  'تعذّر استخراج رمز الـ shortcode من الرابط. انسخ الـ shortcode من رابط المنشور (الجزء بعد /p/ أو /reel/ أو /tv/) أو أدخل المعرّف الرقمي للمنشور (media id) يدويًا.';
+const INVALID_INSTAGRAM_KEY_MESSAGE =
+  'معرّف إنستغرام غير صالح: رمز shortcode من 5 أحرف فأكثر (أحرف وأرقام و _ و -) أو معرّف رقمي من 8 أرقام على الأقل.';
+const INVALID_PLATFORM_MESSAGE = 'المنصة غير صالحة. القيم المسموحة: facebook أو instagram.';
+const PLATFORM_IMMUTABLE_MESSAGE = 'منصة المنشور لا يمكن تغييرها بعد الإنشاء.';
 const DUPLICATE_POST_MESSAGE = 'هذا المنشور مضاف مسبقًا';
 const DUPLICATE_KEYWORD_MESSAGE = 'هذه الكلمة المفتاحية مضافة مسبقًا في هذا المنشور';
+const DUPLICATE_KEYWORD_ON_POST_MESSAGE =
+  'هذه الكلمة المفتاحية موجودة بالفعل في هذا المنشور.';
+
+const PLATFORMS = ['facebook', 'instagram'];
+
+/** يقرأ قيمة platform من query/body — null يعني قيمة غير مسموحة (400). */
+function parsePlatform(value) {
+  if (value === undefined || value === null) return 'facebook';
+  if (PLATFORMS.includes(value)) return value;
+  return null;
+}
 
 function parsePositiveInt(value, fallback) {
   const n = parseInt(value, 10);
@@ -95,7 +123,11 @@ function keyResolvedViaOf(result) {
 
 router.get('/summary', async (req, res, next) => {
   try {
-    const summary = await postsRepo.getSummary();
+    const platform = parsePlatform(req.query.platform);
+    if (!platform) {
+      return res.status(400).json({ error: INVALID_PLATFORM_MESSAGE });
+    }
+    const summary = await postsRepo.getSummary(platform);
     return res.json(summary);
   } catch (err) {
     return next(err);
@@ -109,10 +141,14 @@ router.get('/', async (req, res, next) => {
     const search = typeof req.query.search === 'string' ? req.query.search : '';
     let status = typeof req.query.status === 'string' ? req.query.status : 'all';
     if (!['all', 'active', 'inactive'].includes(status)) status = 'all';
+    const platform = parsePlatform(req.query.platform);
+    if (!platform) {
+      return res.status(400).json({ error: INVALID_PLATFORM_MESSAGE });
+    }
     const page = parsePositiveInt(req.query.page, 1);
     const limit = Math.min(parsePositiveInt(req.query.limit, 20), 200);
 
-    const { rows, total } = await postsRepo.listPosts({ search, status, page, limit });
+    const { rows, total } = await postsRepo.listPosts({ search, status, page, limit, platform });
     return res.json({ items: rows, total, page, limit });
   } catch (err) {
     return next(err);
@@ -124,44 +160,74 @@ router.get('/', async (req, res, next) => {
 router.post('/', async (req, res, next) => {
   try {
     const body = req.body || {};
+    const platform = parsePlatform(body.platform);
+    if (!platform) {
+      return res.status(400).json({ error: INVALID_PLATFORM_MESSAGE });
+    }
     const postUrl = trimString(body.post_url);
     if (!postUrl) {
       return res.status(400).json({ error: 'رابط المنشور مطلوب.' });
-    }
-    if (!isValidFacebookUrl(postUrl)) {
-      return res.status(400).json({ error: INVALID_URL_MESSAGE });
     }
 
     let postKey = null;
     let resolvedUrl = postUrl;
     let resolvedFrom = null;
     let keyResolvedVia = null;
-    const manualKey = trimString(body.post_key);
-    if (manualKey) {
-      if (!/^\d{8,}$/.test(manualKey)) {
-        return res.status(400).json({ error: 'معرّف المنشور يجب أن يكون أرقامًا فقط (8 أرقام على الأقل).' });
+
+    if (platform === 'instagram') {
+      // إنستغرام: تحقّق محلي فقط — بلا resolveFacebookUrl و بلا Graph API.
+      if (!isValidInstagramUrl(postUrl)) {
+        return res.status(400).json({ error: INVALID_INSTAGRAM_URL_MESSAGE });
       }
-      postKey = manualKey;
-    } else {
-      const resolution = await resolveFacebookUrl(postUrl);
-      if (resolution.resolved) {
-        resolvedUrl = resolution.url;
-        resolvedFrom = postUrl;
+      if (isInstagramStoriesUrl(postUrl)) {
+        return res.status(400).json({ error: STORIES_UNSUPPORTED_MESSAGE });
       }
-      postKey = extractPostKey(resolvedUrl);
-      if (!postKey && extractPfbid(resolvedUrl)) {
-        const numeric = await resolveNumericPostId(resolvedUrl);
-        if (numeric) {
-          postKey = numeric.post_key;
-          keyResolvedVia = keyResolvedViaOf(numeric);
+      resolvedUrl = stripInstagramTrackingParams(postUrl);
+      const manualKey = trimString(body.post_key);
+      if (manualKey) {
+        if (!isValidInstagramKey(manualKey)) {
+          return res.status(400).json({ error: INVALID_INSTAGRAM_KEY_MESSAGE });
+        }
+        postKey = manualKey;
+      } else {
+        postKey = extractInstagramShortcode(resolvedUrl);
+        if (!postKey) {
+          return res.status(422).json({ error: INSTAGRAM_MANUAL_KEY_MESSAGE, needs_manual_key: true });
         }
       }
-      if (!postKey) {
-        return res.status(422).json({ error: manualKeyMessageFor(resolvedUrl), needs_manual_key: true });
+    } else {
+      // مسار فيسبوك كما هو تمامًا.
+      if (!isValidFacebookUrl(postUrl)) {
+        return res.status(400).json({ error: INVALID_URL_MESSAGE });
+      }
+      const manualKey = trimString(body.post_key);
+      if (manualKey) {
+        if (!/^\d{8,}$/.test(manualKey)) {
+          return res.status(400).json({ error: 'معرّف المنشور يجب أن يكون أرقامًا فقط (8 أرقام على الأقل).' });
+        }
+        postKey = manualKey;
+      } else {
+        const resolution = await resolveFacebookUrl(postUrl);
+        if (resolution.resolved) {
+          resolvedUrl = resolution.url;
+          resolvedFrom = postUrl;
+        }
+        postKey = extractPostKey(resolvedUrl);
+        if (!postKey && extractPfbid(resolvedUrl)) {
+          const numeric = await resolveNumericPostId(resolvedUrl);
+          if (numeric) {
+            postKey = numeric.post_key;
+            keyResolvedVia = keyResolvedViaOf(numeric);
+          }
+        }
+        if (!postKey) {
+          return res.status(422).json({ error: manualKeyMessageFor(resolvedUrl), needs_manual_key: true });
+        }
       }
     }
 
-    const postType = detectPostType(resolvedUrl);
+    const postType =
+      platform === 'instagram' ? detectInstagramPostType(resolvedUrl) : detectPostType(resolvedUrl);
 
     let title = null;
     if (body.title !== undefined && body.title !== null) {
@@ -185,7 +251,7 @@ router.post('/', async (req, res, next) => {
       return res.status(400).json({ error: variants.error });
     }
 
-    const existing = await postsRepo.findPostByKey(postKey);
+    const existing = await postsRepo.findPostByKey(platform, postKey);
     if (existing) {
       return res.status(409).json({ error: DUPLICATE_POST_MESSAGE });
     }
@@ -197,6 +263,7 @@ router.post('/', async (req, res, next) => {
       postType,
       variants: variants.value,
       isActive,
+      platform,
     });
     if (resolvedFrom || keyResolvedVia) {
       const payload = { ...post };
@@ -217,6 +284,7 @@ router.post('/', async (req, res, next) => {
 // ملاحظة: درجة "/keywords/:keywordId" (مقطعان) لا تتعارض مع "/:id"، لكن نعلنها هنا للأمان.
 
 router.post('/:id/keywords', async (req, res, next) => {
+  let platform = 'facebook';
   try {
     const { id } = req.params;
     if (!isPositiveInt(id)) {
@@ -227,6 +295,7 @@ router.post('/:id/keywords', async (req, res, next) => {
     if (!post) {
       return res.status(404).json({ error: 'المنشور غير موجود.' });
     }
+    platform = post.platform || 'facebook';
 
     const body = req.body || {};
     const keyword = trimString(body.keyword);
@@ -267,7 +336,7 @@ router.post('/:id/keywords', async (req, res, next) => {
     }
 
     if (isActive && post.is_active) {
-      const conflict = await postsRepo.findConflictingKeyword(normalized);
+      const conflict = await postsRepo.findConflictingKeyword(normalized, null, platform);
       if (conflict) {
         return res.status(409).json({ error: keywordConflictMessage(conflict) });
       }
@@ -283,6 +352,9 @@ router.post('/:id/keywords', async (req, res, next) => {
     return res.status(201).json(created);
   } catch (err) {
     if (err.code === '23505') {
+      if (platform === 'instagram') {
+        return res.status(409).json({ error: DUPLICATE_KEYWORD_ON_POST_MESSAGE });
+      }
       return res.status(409).json({ error: DUPLICATE_KEYWORD_MESSAGE });
     }
     if (err.code === '23503') {
@@ -293,6 +365,7 @@ router.post('/:id/keywords', async (req, res, next) => {
 });
 
 router.patch('/keywords/:keywordId', async (req, res, next) => {
+  let platform = 'facebook';
   try {
     const { keywordId } = req.params;
     if (!isPositiveInt(keywordId)) {
@@ -303,6 +376,7 @@ router.patch('/keywords/:keywordId', async (req, res, next) => {
     if (!existing) {
       return res.status(404).json({ error: 'الكلمة المفتاحية غير موجودة.' });
     }
+    platform = existing.platform || 'facebook';
 
     const body = req.body || {};
     const fields = {};
@@ -352,7 +426,7 @@ router.patch('/keywords/:keywordId', async (req, res, next) => {
     }
 
     if (isActive && existing.post_is_active) {
-      const conflict = await postsRepo.findConflictingKeyword(normalized, keywordId);
+      const conflict = await postsRepo.findConflictingKeyword(normalized, keywordId, platform);
       if (conflict) {
         return res.status(409).json({ error: keywordConflictMessage(conflict) });
       }
@@ -362,6 +436,9 @@ router.patch('/keywords/:keywordId', async (req, res, next) => {
     return res.json(updated);
   } catch (err) {
     if (err.code === '23505') {
+      if (platform === 'instagram') {
+        return res.status(409).json({ error: DUPLICATE_KEYWORD_ON_POST_MESSAGE });
+      }
       return res.status(409).json({ error: DUPLICATE_KEYWORD_MESSAGE });
     }
     return next(err);
@@ -425,6 +502,17 @@ router.patch('/:id', async (req, res, next) => {
 
     const body = req.body || {};
     const fields = {};
+    const storedPlatform = post.platform || 'facebook';
+
+    if (Object.prototype.hasOwnProperty.call(body, 'platform')) {
+      const reqPlatform = parsePlatform(body.platform);
+      if (!reqPlatform) {
+        return res.status(400).json({ error: INVALID_PLATFORM_MESSAGE });
+      }
+      if (reqPlatform !== storedPlatform) {
+        return res.status(400).json({ error: PLATFORM_IMMUTABLE_MESSAGE });
+      }
+    }
 
     if (Object.prototype.hasOwnProperty.call(body, 'title')) {
       if (body.title !== null && typeof body.title !== 'string') {
@@ -440,45 +528,70 @@ router.patch('/:id', async (req, res, next) => {
     let keyResolvedVia = null;
     if (urlSent) {
       newUrl = trimString(body.post_url);
-      if (!newUrl || !isValidFacebookUrl(newUrl)) {
-        return res.status(400).json({ error: INVALID_URL_MESSAGE });
+      if (storedPlatform === 'instagram') {
+        if (!newUrl || !isValidInstagramUrl(newUrl)) {
+          return res.status(400).json({ error: INVALID_INSTAGRAM_URL_MESSAGE });
+        }
+        if (isInstagramStoriesUrl(newUrl)) {
+          return res.status(400).json({ error: STORIES_UNSUPPORTED_MESSAGE });
+        }
+        newUrl = stripInstagramTrackingParams(newUrl);
+        fields.post_url = newUrl;
+      } else {
+        if (!newUrl || !isValidFacebookUrl(newUrl)) {
+          return res.status(400).json({ error: INVALID_URL_MESSAGE });
+        }
+        fields.post_url = newUrl;
       }
-      fields.post_url = newUrl;
     }
 
     let newKey = post.post_key;
     const manualKeySent = Object.prototype.hasOwnProperty.call(body, 'post_key');
     if (manualKeySent && trimString(body.post_key)) {
       const mk = trimString(body.post_key);
-      if (!/^\d{8,}$/.test(mk)) {
+      if (storedPlatform === 'instagram') {
+        if (!isValidInstagramKey(mk)) {
+          return res.status(400).json({ error: INVALID_INSTAGRAM_KEY_MESSAGE });
+        }
+      } else if (!/^\d{8,}$/.test(mk)) {
         return res.status(400).json({ error: 'معرّف المنشور يجب أن يكون أرقامًا فقط (8 أرقام على الأقل).' });
       }
       newKey = mk;
       fields.post_key = mk;
     } else if (urlSent && !manualKeySent) {
-      const resolution = await resolveFacebookUrl(newUrl);
-      if (resolution.resolved) {
-        resolvedFrom = newUrl;
-        newUrl = resolution.url;
-        fields.post_url = newUrl;
-      }
-      let extracted = extractPostKey(newUrl);
-      if (!extracted && extractPfbid(newUrl)) {
-        const numeric = await resolveNumericPostId(newUrl);
-        if (numeric) {
-          extracted = numeric.post_key;
-          keyResolvedVia = keyResolvedViaOf(numeric);
+      if (storedPlatform === 'instagram') {
+        const extracted = extractInstagramShortcode(newUrl);
+        if (!extracted) {
+          return res.status(422).json({ error: INSTAGRAM_MANUAL_KEY_MESSAGE, needs_manual_key: true });
         }
+        newKey = extracted;
+        fields.post_key = extracted;
+      } else {
+        const resolution = await resolveFacebookUrl(newUrl);
+        if (resolution.resolved) {
+          resolvedFrom = newUrl;
+          newUrl = resolution.url;
+          fields.post_url = newUrl;
+        }
+        let extracted = extractPostKey(newUrl);
+        if (!extracted && extractPfbid(newUrl)) {
+          const numeric = await resolveNumericPostId(newUrl);
+          if (numeric) {
+            extracted = numeric.post_key;
+            keyResolvedVia = keyResolvedViaOf(numeric);
+          }
+        }
+        if (!extracted) {
+          return res.status(422).json({ error: manualKeyMessageFor(newUrl), needs_manual_key: true });
+        }
+        newKey = extracted;
+        fields.post_key = extracted;
       }
-      if (!extracted) {
-        return res.status(422).json({ error: manualKeyMessageFor(newUrl), needs_manual_key: true });
-      }
-      newKey = extracted;
-      fields.post_key = extracted;
     }
 
     if (urlSent) {
-      fields.post_type = detectPostType(newUrl);
+      fields.post_type =
+        storedPlatform === 'instagram' ? detectInstagramPostType(newUrl) : detectPostType(newUrl);
     }
 
     if (Object.prototype.hasOwnProperty.call(body, 'comment_reply_variants')) {
@@ -499,14 +612,14 @@ router.patch('/:id', async (req, res, next) => {
     }
 
     if (newKey !== post.post_key) {
-      const dup = await postsRepo.findPostByKey(newKey, id);
+      const dup = await postsRepo.findPostByKey(storedPlatform, newKey, id);
       if (dup) {
         return res.status(409).json({ error: DUPLICATE_POST_MESSAGE });
       }
     }
 
     if (activating) {
-      const conflict = await postsRepo.findReactivationConflict(id);
+      const conflict = await postsRepo.findReactivationConflict(id, storedPlatform);
       if (conflict) {
         return res.status(409).json({ error: keywordConflictMessage(conflict) });
       }

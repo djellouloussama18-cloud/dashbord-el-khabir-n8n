@@ -1,19 +1,29 @@
 /* =====================================================
-   PAGE: Posts — إدارة منشورات فيسبوك + الكلمات المفتاحية
+   PAGE: Posts — إدارة منشورات فيسبوك/إنستغرام + الكلمات المفتاحية
    المصادر:
-     GET    /api/posts/summary
-     GET    /api/posts
-     POST   /api/posts
-     GET    /api/posts/:id
-     PATCH  /api/posts/:id
-     DELETE /api/posts/:id
-     POST   /api/posts/:id/keywords
-     PATCH  /api/posts/keywords/:keywordId
-     DELETE /api/posts/keywords/:keywordId
-     GET    /api/posts/:id/comments
-     GET    /api/posts/:id/hits
-   ملاحظة: التعليقات والإصابات تُكتب من n8n — الواجهة تقرأها فقط.
-   ===================================================== */
+      GET    /api/posts/summary?platform=facebook|instagram
+      GET    /api/posts?platform=facebook|instagram
+      POST   /api/posts
+      GET    /api/posts/:id
+      PATCH  /api/posts/:id
+      DELETE /api/posts/:id
+      POST   /api/posts/:id/keywords
+      PATCH  /api/posts/keywords/:keywordId
+      DELETE /api/posts/keywords/:keywordId
+      GET    /api/posts/:id/comments
+      GET    /api/posts/:id/hits
+    ملاحظة: التعليقات والإصابات تُكتب من n8n — الواجهة تقرأها فقط.
+    ===================================================== */
+
+function readStoredPostsPlatform() {
+  try {
+    const v = localStorage.getItem("posts_platform");
+    if (v === "facebook" || v === "instagram") return v;
+  } catch (err) {
+    /* ignore */
+  }
+  return "facebook";
+}
 
 const PostsPage = {
   container: null,
@@ -22,8 +32,10 @@ const PostsPage = {
 
   state: {
     view: "list",
+    platform: readStoredPostsPlatform(),
     list: { page: 1, limit: 10, search: "", status: "all", data: null, requestSeq: 0 },
     summary: null,
+    summarySeq: 0,
     detail: null,
   },
 
@@ -89,6 +101,105 @@ const PostsPage = {
     if (status === "sent") return "أُرسلت";
     if (status === "failed") return "فشلت";
     return status || "—";
+  },
+
+  /* ---- platform helpers ---- */
+
+  platformName(platform) {
+    return platform === "instagram" ? "Instagram" : "Facebook";
+  },
+
+  platformTexts(platform) {
+    if (platform === "instagram") {
+      return {
+        subtitle:
+          "إدارة منشورات إنستغرام (منشور / ريل / فيديو) التي يرد عليها البوت في التعليقات",
+        info:
+          "عندما يعلّق شخص على منشور مفعَّل ويتضمن تعليقه إحدى كلماته المفتاحية، يرسل البوت أولًا الرسالة كرد خاص (DM) على التعليق، ثم يكتب ردًا عامًا تحت التعليق بإحدى صيغ الرد. الكلمة المفتاحية فريدة داخل المنشور نفسه فقط — يمكن استعمال نفس الكلمة في منشورات إنستغرام أخرى. الرد الخاص يعمل فقط خلال المدة المسموحة بعد كتابة التعليق (حد ميتا). الستوري غير مدعومة.",
+      };
+    }
+    return {
+      subtitle: "إدارة منشورات فيسبوك التي يرد عليها البوت في التعليقات",
+      info:
+        "عندما يعلّق شخص على منشور مفعَّل، يرد البوت بتعليق يطلب منه كتابة الكلمة المفتاحية في الخاص، وعند كتابتها يرسل له البوت الرسالة المخصصة. الكلمة المفتاحية يجب أن تكون فريدة عبر كل المنشورات النشطة.",
+    };
+  },
+
+  persistPlatform() {
+    try {
+      localStorage.setItem("posts_platform", this.state.platform);
+    } catch (err) {
+      /* ignore */
+    }
+  },
+
+  buildPlatformBadge(platform) {
+    const p = platform === "instagram" ? "instagram" : "facebook";
+    return this.el("span", "platform-badge platform-badge--" + p, this.platformName(p));
+  },
+
+  buildPlatformTabs() {
+    const wrap = this.el("div", "posts-platform-tabs");
+    wrap.id = "posts-platform-tabs";
+    wrap.setAttribute("role", "group");
+    wrap.setAttribute("aria-label", "اختر المنصة");
+    const icons = {
+      facebook:
+        '<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M14 8h3V4h-3c-2.8 0-5 2.2-5 5v3H6v4h3v8h4v-8h3l1-4h-4V9c0-.6.4-1 1-1z"/></svg>',
+      instagram:
+        '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17.2" cy="6.8" r="1" fill="currentColor" stroke="none"/></svg>',
+    };
+    [["facebook", "Facebook"], ["instagram", "Instagram"]].forEach(([key, label]) => {
+      const btn = this.el(
+        "button",
+        "posts-platform-tab" + (this.state.platform === key ? " active" : "")
+      );
+      btn.type = "button";
+      btn.dataset.platform = key;
+      btn.setAttribute("aria-pressed", this.state.platform === key ? "true" : "false");
+      const icon = this.el("span", "posts-platform-tab-icon");
+      icon.innerHTML = icons[key];
+      btn.appendChild(icon);
+      btn.appendChild(this.el("span", null, label));
+      btn.addEventListener("click", () => this.setPlatform(key));
+      wrap.appendChild(btn);
+    });
+    return wrap;
+  },
+
+  updatePlatformTabs() {
+    const tabs = this.elRefs && this.elRefs.platformTabs;
+    if (!tabs) return;
+    tabs.querySelectorAll(".posts-platform-tab").forEach((btn) => {
+      const active = btn.dataset.platform === this.state.platform;
+      btn.classList.toggle("active", active);
+      btn.setAttribute("aria-pressed", active ? "true" : "false");
+    });
+  },
+
+  applyPlatformTexts() {
+    if (!this.elRefs) return;
+    const t = this.platformTexts(this.state.platform);
+    if (this.elRefs.subtitle) this.elRefs.subtitle.textContent = t.subtitle;
+    if (this.elRefs.infoText) this.elRefs.infoText.textContent = t.info;
+  },
+
+  setPlatform(platform) {
+    if (platform !== "facebook" && platform !== "instagram") return;
+    if (this.state.platform === platform) return;
+    this.state.platform = platform;
+    this.persistPlatform();
+    this.state.list.page = 1;
+    this.state.list.search = "";
+    this.state.list.status = "all";
+    if (this.elRefs) {
+      if (this.elRefs.search) this.elRefs.search.value = "";
+      if (this.elRefs.status) this.elRefs.status.value = "all";
+    }
+    this.updatePlatformTabs();
+    this.applyPlatformTexts();
+    this.loadSummary();
+    this.loadList();
   },
 
   showToast(message, type) {
@@ -215,7 +326,7 @@ const PostsPage = {
     return field;
   },
 
-  buildVariantEditor(initialVariants) {
+  buildVariantEditor(initialVariants, hintText) {
     const wrap = this.el("div", "variant-editor");
     const rows = this.el("div", "variant-rows");
     const addBtn = this.el("button", "variant-add-btn", "+ إضافة صيغة");
@@ -249,7 +360,8 @@ const PostsPage = {
       this.el(
         "div",
         "form-hint",
-        "استعمل {keyword} للكلمة المفتاحية الأولى و{keywords} لكل الكلمات. إذا تركت الصيغ فارغة يستعمل البوت صيغًا افتراضية."
+        hintText ||
+          "استعمل {keyword} للكلمة المفتاحية الأولى و{keywords} لكل الكلمات. إذا تركت الصيغ فارغة يستعمل البوت صيغًا افتراضية."
       )
     );
     wrap.getVariants = () =>
@@ -281,6 +393,7 @@ const PostsPage = {
       this.debounceTimer = null;
     }
     this.state.list.requestSeq += 1;
+    this.state.summarySeq += 1;
     if (this.state.detail) {
       this.state.detail.comments.seq += 1;
       this.state.detail.hits.seq += 1;
@@ -305,14 +418,15 @@ const PostsPage = {
         <header class="posts-header">
           <div class="posts-header-text">
             <h2 class="posts-title">Auto Comments</h2>
-            <span class="posts-subtitle">إدارة منشورات فيسبوك التي يرد عليها البوت في التعليقات</span>
+            <span class="posts-subtitle" id="posts-subtitle"></span>
           </div>
+          <div class="posts-platform-tabs" id="posts-platform-tabs" role="group" aria-label="اختر المنصة"></div>
           <button type="button" class="posts-primary-btn" id="posts-add-btn">إضافة منشور</button>
         </header>
 
         <details class="posts-info-box">
           <summary>كيف يعمل الرد على المنشورات؟</summary>
-          <p>عندما يعلّق شخص على منشور مفعَّل، يرد البوت بتعليق يطلب منه كتابة الكلمة المفتاحية في الخاص، وعند كتابتها يرسل له البوت الرسالة المخصصة. الكلمة المفتاحية يجب أن تكون فريدة عبر كل المنشورات النشطة.</p>
+          <p id="posts-info-text"></p>
         </details>
 
         <div class="stats-grid" id="posts-stats"></div>
@@ -341,9 +455,18 @@ const PostsPage = {
       search: this.container.querySelector("#posts-search-input"),
       status: this.container.querySelector("#posts-status-select"),
       add: this.container.querySelector("#posts-add-btn"),
+      platformTabs: this.container.querySelector("#posts-platform-tabs"),
+      subtitle: this.container.querySelector("#posts-subtitle"),
+      infoText: this.container.querySelector("#posts-info-text"),
     };
     this.elRefs.status.value = this.state.list.status;
     this.elRefs.search.value = this.state.list.search;
+
+    // مبدّل المنصة (segmented control)
+    const platformTabs = this.buildPlatformTabs();
+    this.elRefs.platformTabs.replaceWith(platformTabs);
+    this.elRefs.platformTabs = platformTabs;
+    this.applyPlatformTexts();
 
     this.elRefs.add.addEventListener("click", () => this.openCreateModal());
     this.elRefs.search.addEventListener("input", () => {
@@ -362,9 +485,13 @@ const PostsPage = {
   },
 
   async loadSummary() {
+    const seq = ++this.state.summarySeq;
     try {
-      this.state.summary = await getPostsSummary();
+      const data = await getPostsSummary(this.state.platform);
+      if (seq !== this.state.summarySeq) return;
+      this.state.summary = data;
     } catch (err) {
+      if (seq !== this.state.summarySeq) return;
       this.state.summary = null;
     }
     if (this.state.view === "list" && this.elRefs) this.renderStats();
@@ -399,6 +526,7 @@ const PostsPage = {
         limit: this.state.list.limit,
         search: this.state.list.search || undefined,
         status: this.state.list.status,
+        platform: this.state.platform,
       });
       if (seq !== this.state.list.requestSeq) return;
       this.state.list.data = data;
@@ -456,15 +584,18 @@ const PostsPage = {
 
     const head = this.el("div", "post-card-head");
     head.appendChild(this.el("h3", "post-card-title", post.title || post.post_key));
+    head.appendChild(this.buildPlatformBadge(post.platform));
     head.appendChild(
       this.el("span", "post-type-badge post-type--" + post.post_type, this.typeLabel(post.post_type))
     );
-    const link = this.el("a", "post-card-link", "فتح ↗");
-    link.href = post.post_url;
-    link.target = "_blank";
-    link.rel = "noopener noreferrer";
-    link.addEventListener("click", (e) => e.stopPropagation());
-    head.appendChild(link);
+    if (post.post_url && String(post.post_url).startsWith("https://")) {
+      const link = this.el("a", "post-card-link", "فتح ↗");
+      link.href = post.post_url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.addEventListener("click", (e) => e.stopPropagation());
+      head.appendChild(link);
+    }
     main.appendChild(head);
 
     main.appendChild(this.el("div", "post-card-sub", "المعرّف: " + post.post_key));
@@ -560,16 +691,26 @@ const PostsPage = {
      ===================================================== */
 
   openCreateModal() {
+    const platform = this.state.platform;
+    const isIg = platform === "instagram";
+
     const urlInput = this.el("input", "form-input");
     urlInput.type = "text";
-    urlInput.placeholder = "https://www.facebook.com/reel/1234567890123";
+    urlInput.placeholder = isIg
+      ? "https://www.instagram.com/reel/XXXXXXXXXXX/"
+      : "https://www.facebook.com/reel/1234567890123";
     urlInput.dir = "ltr";
 
     const titleInput = this.el("input", "form-input");
     titleInput.type = "text";
     titleInput.placeholder = "عنوان اختياري لديك فقط";
 
-    const variants = this.buildVariantEditor([]);
+    const variants = this.buildVariantEditor(
+      [],
+      isIg
+        ? "استعمل {keyword} للكلمة المفتاحية الأولى و{keywords} لكل الكلمات و{username} لاسم المعلّق. إذا تركت الصيغ فارغة يستعمل البوت صيغًا افتراضية."
+        : undefined
+    );
 
     const kwInput = this.el("input", "form-input");
     kwInput.type = "text";
@@ -589,19 +730,27 @@ const PostsPage = {
 
     const manualInput = this.el("input", "form-input");
     manualInput.type = "text";
-    manualInput.placeholder = "مثال: 1234567890123";
+    manualInput.placeholder = isIg ? "مثال: Cabc123XYZ" : "مثال: 1234567890123";
     manualInput.dir = "ltr";
     const manualField = this.buildField(
-      "معرّف المنشور (يدويًا)",
+      isIg ? "الـ Shortcode أو المعرّف الرقمي للوسائط" : "معرّف المنشور (يدويًا)",
       manualInput,
-      "لم نتعرّف على الرابط تلقائيًا. افتح المنشور الكامل وانسخ الرابط، أو أدخل المعرّف الرقمي يدويًا."
+      isIg
+        ? "الـ Shortcode هو الجزء من الرابط بعد /p/ أو /reel/. لم نتعرّف على الرابط تلقائيًا — افتح المنشور الكامل وانسخ الرابط أو أدخل الـ Shortcode أو المعرّف الرقمي للوسائط."
+        : "لم نتعرّف على الرابط تلقائيًا. افتح المنشور الكامل وانسخ الرابط، أو أدخل المعرّف الرقمي يدويًا."
     );
     manualField.style.display = "none";
 
     const errorBox = this.el("div", "modal-error hidden");
 
     const body = [
-      this.buildField("رابط المنشور *", urlInput, "رابط الريل أو الفيديو أو المنشور على فيسبوك."),
+      this.buildField(
+        "رابط المنشور *",
+        urlInput,
+        isIg
+          ? "روابط مدعومة: منشور (/p/)، ريل (/reel/)، فيديو (/tv/). الستوري غير مدعوم."
+          : "رابط الريل أو الفيديو أو المنشور على فيسبوك."
+      ),
       this.buildField("العنوان (اختياري)", titleInput),
       this.buildField("صيغ رد التعليق", variants),
       this.el("div", "form-section-title", "كلمة مفتاحية أولى (اختياري)"),
@@ -617,7 +766,7 @@ const PostsPage = {
     cancelBtn.type = "button";
 
     const modal = this.openModal({
-      title: "إضافة منشور",
+      title: "إضافة منشور — " + this.platformName(platform),
       bodyNodes: body,
       footerNodes: [cancelBtn, submitBtn],
     });
@@ -637,9 +786,15 @@ const PostsPage = {
         urlInput.focus();
         return;
       }
+      if (isIg && !postUrl.startsWith("https://")) {
+        showError("رابط إنستغرام يجب أن يبدأ بـ https://");
+        urlInput.focus();
+        return;
+      }
 
       const payload = {
         post_url: postUrl,
+        platform: platform,
         title: titleInput.value.trim() || undefined,
         comment_reply_variants: variants.getVariants(),
       };
@@ -657,7 +812,7 @@ const PostsPage = {
         }
 
         if (created.key_resolved_via) {
-          this.showToast("تم استخراج المعرّف الرقمي للمنشور تلقائيًا", "info");
+          this.showToast("تم استخراج المعرّف تلقائيًا من الرابط", "info");
         }
 
         let keywordFailed = false;
@@ -686,7 +841,9 @@ const PostsPage = {
         const successBox = this.el(
           "div",
           "modal-success",
-          "معرّف المنشور: " + created.post_key
+          "معرّف المنشور: " +
+            created.post_key +
+            (isIg ? " · " + this.typeLabel(created.post_type) : "")
         );
         body.unshift(successBox);
 
@@ -789,6 +946,8 @@ const PostsPage = {
     const post = this.state.detail.post;
     this.detailRefs.title.textContent = post.title || post.post_key;
     this.detailRefs.sub.textContent =
+      this.platformName(post.platform) +
+      " · " +
       this.typeLabel(post.post_type) +
       " · المعرّف: " +
       post.post_key +
@@ -831,6 +990,7 @@ const PostsPage = {
 
   renderSettingsTab() {
     const post = this.state.detail.post;
+    const isIg = post.platform === "instagram";
     const wrap = this.el("div", "posts-settings");
 
     const titleInput = this.el("input", "form-input");
@@ -845,15 +1005,22 @@ const PostsPage = {
     const manualInput = this.el("input", "form-input");
     manualInput.type = "text";
     manualInput.dir = "ltr";
-    manualInput.placeholder = "1234567890123";
+    manualInput.placeholder = isIg ? "Cabc123XYZ" : "1234567890123";
     const manualField = this.buildField(
-      "معرّف المنشور (يدويًا)",
+      isIg ? "الـ Shortcode أو المعرّف الرقمي للوسائط" : "معرّف المنشور (يدويًا)",
       manualInput,
-      "لم نتعرّف على الرابط تلقائيًا — أدخل المعرّف الرقمي يدويًا."
+      isIg
+        ? "الـ Shortcode هو الجزء من الرابط بعد /p/ أو /reel/. لم نتعرّف على الرابط تلقائيًا — أدخله يدويًا."
+        : "لم نتعرّف على الرابط تلقائيًا — أدخل المعرّف الرقمي يدويًا."
     );
     manualField.style.display = "none";
 
-    const variants = this.buildVariantEditor(post.comment_reply_variants || []);
+    const variants = this.buildVariantEditor(
+      post.comment_reply_variants || [],
+      isIg
+        ? "استعمل {keyword} للكلمة المفتاحية الأولى و{keywords} لكل الكلمات و{username} لاسم المعلّق. إذا تركت الصيغ فارغة يستعمل البوت صيغًا افتراضية."
+        : undefined
+    );
 
     const activeRow = this.el("div", "form-switch-row");
     activeRow.appendChild(this.el("span", "form-label", "المنشور نشط"));
@@ -872,7 +1039,12 @@ const PostsPage = {
     errorBox.style.marginBottom = "8px";
 
     wrap.appendChild(this.buildField("العنوان", titleInput));
-    wrap.appendChild(this.buildField("رابط المنشور", urlInput));
+    const urlField = this.buildField("رابط المنشور", urlInput);
+    const platformRow = this.el("div", "posts-platform-readonly");
+    platformRow.appendChild(this.el("span", "form-label", "المنصة"));
+    platformRow.appendChild(this.buildPlatformBadge(post.platform));
+    urlField.appendChild(platformRow);
+    wrap.appendChild(urlField);
     wrap.appendChild(this.buildField("صيغ رد التعليق", variants));
 
     // ── مؤشر Round-Robin ──
@@ -907,10 +1079,12 @@ const PostsPage = {
           previewResult.classList.remove("hidden");
           // تحديث مؤشر الرد التالي
           const total = (post.comment_reply_variants || []).length;
-          const currentIdx = (post.comment_reply_index || 0) + 1;
-          post.comment_reply_index = currentIdx % total;
-          rrIndex.textContent =
-            "الرد التالي: رقم " + ((post.comment_reply_index || 0) + 1) + " من " + total;
+          if (total > 0) {
+            const currentIdx = (post.comment_reply_index || 0) + 1;
+            post.comment_reply_index = currentIdx % total;
+            rrIndex.textContent =
+              "الرد التالي: رقم " + ((post.comment_reply_index || 0) + 1) + " من " + total;
+          }
         } catch (err) {
           this.showToast(err.message || "تعذّر جلب الرد", "error");
         } finally {
@@ -936,6 +1110,10 @@ const PostsPage = {
       const url = urlInput.value.trim();
       if (!url) {
         showError("رابط المنشور مطلوب.");
+        return;
+      }
+      if (isIg && !url.startsWith("https://")) {
+        showError("رابط إنستغرام يجب أن يبدأ بـ https://");
         return;
       }
       const payload = {
@@ -1011,6 +1189,16 @@ const PostsPage = {
     addBtn.addEventListener("click", () => this.openKeywordModal(null));
     head.appendChild(addBtn);
     wrap.appendChild(head);
+
+    if (d.post && d.post.platform === "instagram") {
+      wrap.appendChild(
+        this.el(
+          "div",
+          "posts-info-note",
+          "الكلمة المفتاحية فريدة داخل المنشور فقط، ويمكن استعمال نفس الكلمة في منشورات إنستغرام أخرى."
+        )
+      );
+    }
 
     if (!d.keywords.length) {
       wrap.appendChild(this.el("div", "posts-empty", "لا توجد كلمات مفتاحية بعد."));
@@ -1150,9 +1338,17 @@ const PostsPage = {
       dmField,
       stopRow,
       stopHint,
-      activeRow,
-      errorBox,
     ];
+    if (this.state.detail.post && this.state.detail.post.platform === "instagram") {
+      body.push(
+        this.el(
+          "div",
+          "form-hint",
+          "تُرسل الرسالة كرد خاص على التعليق، لذا تعمل فقط خلال المدة المسموحة بعد كتابة التعليق."
+        )
+      );
+    }
+    body.push(activeRow, errorBox);
 
     const submitBtn = this.el("button", "notes-btn primary", isEdit ? "حفظ" : "إضافة");
     submitBtn.type = "button";

@@ -1,47 +1,81 @@
 # Frontend — Dashboard "أكاديمية الخبير"
 
 لوحة تحكم (Vanilla JS + HTML + CSS فقط، بلا أي framework أو build tool) مع **شاشة تسجيل دخول**
-بكلمة سر واحدة، ثم جلسة عبر JWT Bearer token. تفتح على `index.html` وتُعرض شاشة الدخول حتى ينجح
-تسجيل الدخول.
+بكلمة سر واحدة، ثم جلسة عبر JWT Bearer token. الواجهة SPA بـ **hash routing** (`#/...`)، تفتح على
+`index.html` وتُعرض شاشة الدخول حتى ينجح تسجيل الدخول.
+
+## الصفحات (Routes)
+
+| المسار                          | الصفحة            | الوصف                                                                                     |
+| ------------------------------- | ----------------- | ----------------------------------------------------------------------------------------- |
+| `#/conversations` (الافتراضي)   | Conversations     | قائمة المحادثات + المحادثة المفتوحة: رسائل، ON/OFF للبوت، إيقاف مؤقت، ملاحظات، رد يدوي، طلبية مرتبطة |
+| `#/overview`                    | Overview          | مؤشرات سريعة (KPIs) ونشاط حديث                                                          |
+| `#/orders`                      | Orders            | طلبيات Google Sheets: بحث، فلاتر، تغيير الحالة مباشرة                                     |
+| `#/analytics`                   | Analytics         | تحليلات يومية/أسبوعية + رسوم بيانية (Chart.js نسخة محلية)                                 |
+| `#/contacts`                    | Contacts          | جدول جهات الاتصال + فلاتر (حالة/لغة/ولاية)                                                |
+| `#/posts`                       | Auto Comments     | منشورات التعليقات التلقائية: كلمات مفتاحية، صيغ رد (Round-Robin)، سجل التعليقات والإصابات  |
+| `#/automation`                  | Automation        | placeholder — قريبًا                                                                       |
+| `#/settings`                    | Settings          | placeholder — قريبًا                                                                       |
 
 ## البنية
 
 ```
 frontend/
-├── index.html          # الصفحة الرئيسية والوحيدة (شاشة الدخول + الداشبورد)
+├── index.html              # الصفحة الوحيدة: شاشة الدخول + هيكل الداشبورد (topbar/sidebar/outlet)
 ├── css/
-│   └── style.css       # تنسيق RTL (شاشة الدخول + الداشبورد)
+│   └── style.css           # التنسيق الكامل (متجاوب: drawer للجوال + tablet/mobile)
 ├── js/
-│   ├── config.js       # BACKEND_URL (يُعدَّل يدويًا — بلا أي سر)
-│   ├── auth.js         # Login gate: فحص التوكن، تسجيل الدخول، تسجيل الخروج
-│   ├── api.js          # apiFetch (Bearer token) + دوال النداءات للـ backend
-│   ├── dashboard.js    # القائمة: بحث، فلاتر، ترقيم صفحات
-│   └── conversation.js # لوحة المحادثة: رسائل، ON/OFF، ملاحظات
+│   ├── config.js           # اكتشاف تلقائي لعنوان الـ backend (بلا أي سر في الكود)
+│   ├── auth.js             # Login gate: فحص التوكن، boot الواجهة، تسجيل الخروج
+│   ├── api.js              # apiFetch (Bearer token) + دوال كل نداءات الـ backend
+│   ├── router.js           # Hash router خفيف (render/destroy لكل صفحة)
+│   ├── shell.js            # الـ shell: sidebar/topbar، drawer الجوال، Ctrl+/ للبحث، الشارات
+│   ├── app.js              # نقطة الدخول: Auth.init ثم Auth.boot عند وجود توكن صالح
+│   ├── chart.umd.min.js    # Chart.js (نسخة محلية، بلا CDN)
+│   ├── pages/
+│   │   ├── conversations.js  # المحادثات (الافتراضي): قائمة + شات + polling
+│   │   ├── overview.js       # نظرة عامة
+│   │   ├── orders.js         # الطلبيات
+│   │   ├── analytics.js      # التحليلات
+│   │   ├── contacts.js       # جهات الاتصال
+│   │   ├── posts.js          # التعليقات التلقائية (أكبر صفحة)
+│   │   ├── automation.js     # placeholder
+│   │   └── settings.js       # placeholder
+│   ├── dashboard.js        # قديم — لم يعد يُحمَّل في index.html (استُبدل بـ pages/)
+│   └── conversation.js     # قديم — استُبدل بـ pages/conversations.js
 └── README.md
 ```
 
 ## الإعداد
 
-1. افتح `js/config.js` واضبط:
+1. `js/config.js` يكتشف البيئة تلقائيًا — لا يحتاج تعديلًا يدويًا في العادة:
 
    ```js
-   const BACKEND_URL = "https://your-backend-url.example.com";
+   // localhost / 127.0.0.1 → backend محلي (http://localhost:3001)
+   // غير ذلك              → رابط الإنتاج (Render)
    ```
 
-   - `BACKEND_URL`: رابط الـ backend المنشور. بلا أي مفتاح أو كلمة سر فالكود.
+   يُعدَّل فقط عند تغيير رابط الإنتاج. لا يوجد أي مفتاح أو كلمة سر في الكود.
 
 2. عند فتح الصفحة:
    - لا يوجد توكن صالح → تظهر شاشة تسجيل الدخول فقط (محتوى الداشبورد مخفي من البداية، بلا وميض).
-   - توجد توكن صالح → يظهر الداشبورد مباشرة.
+   - يوجد توكن صالح → يُشغَّل الـ shell والراوتر ويظهر الداشبورد مباشرة.
 
 ## تدفق المصادقة
 
 - `js/auth.js` يخزن التوكن في `localStorage` (المفتاح `dashboard_token`) بعد `POST /api/auth/login`.
 - `js/api.js` يرسل `Authorization: Bearer <token>` في كل طلب محمي.
 - عند أي استجابة `401` تُمسح التوكن وتُعاد شاشة تسجيل الدخول فورًا (الجلسة انتهت أو التوكن تلاعب فيه).
-- **الأمان الحقيقي من السيرفر**: حتى لو عطّل أحد الجافاسكريبت أو عدّل `localStorage` يدويًا،
-  أي نداء API يفشل بلا توكن موقّع من السيرفر (`jwt.verify`). شاشة الدخول واجهة فقط.
+- يُفحص `exp` من الـ JWT محليًا (فك ترميز payload بلا مكتبة) لقرار العرض/الإخفاء فقط —
+  **التحقق الحقيقي من التوقيع يتم دائمًا في السيرفر** (`jwt.verify`). حتى لو عطّل أحد الجافاسكريبت
+  أو عدّل `localStorage` يدويًا، أي نداء API يفشل بلا توكن موقّع من السيرفر.
 - "تسجيل الخروج" في أسفل الـ sidebar يمسح التوكن ويعود لشاشة الدخول.
+
+## التحديث المستمر (Polling)
+
+- قائمة المحادثات تُحدَّث كل **10 ثوانٍ** (merge مع الحالة الحالية بلا وميض).
+- المحادثة المفتوحة تُحدَّث كل **5 ثوانٍ**.
+- لا websockets ولا SSE — كل التحديثات عبر `apiFetch` العادي.
 
 ## النشر على Netlify
 
@@ -51,13 +85,15 @@ frontend/
 netlify deploy --prod
 ```
 
-`netlify.toml` مضبوط بـ `publish = "frontend"`، فلن تحتاج أي إعدادات إضافية. الرابط الرئيسي
-يخدم `index.html` مباشرة. أضف رابط Netlify في سيرفر الـ backend ضمن `FRONTEND_URL` (CORS).
+`netlify.toml` مضبوط بـ `publish = "frontend"`، فلن تحتاج أي إعدادات إضافية (بلا build step —
+ملفات ثابتة خام). الرابط الرئيسي يخدم `index.html` مباشرة. أضف رابط Netlify في سيرفر الـ backend
+ضمن `FRONTEND_URL` (CORS).
 
 ## ملاحظات
 
-- لا يوجد real-time/polling في هذه المرحلة — البيانات تُحضَّر عند فتح الصفحة وعند كل تفاعل.
-- عناصر القائمة والرسائل تُبنى بـ `createElement`/`textContent` (ممنوع `innerHTML` مع بيانات
-  من الـ backend لتجنب XSS).
-- لا تُحفظ كلمة السر النصية في أي ملف frontend — فقط التوكن المؤقت بعد تسجيل الدخول، ويكون
-  صلاحيته منتهية تلقائيًا بعد 7 أيام (يتطلب إعادة الدخول).
+- عناصر القوائم والرسائل تُبنى بـ `createElement`/`textContent`؛ وعند استعمال `innerHTML` للقوالب
+  الثابتة تُمرَّر البيانات القادمة من الـ backend عبر `escapeHtml` (لتجنب XSS).
+- لا تُحفظ كلمة سر نصية في أي ملف frontend — فقط التوكن المؤقت بعد تسجيل الدخول، وصلاحيته
+  منتهية تلقائيًا بعد 7 أيام (يتطلب إعادة الدخول).
+- `js/dashboard.js` و `js/conversation.js` ملفات قديمة لم تعد جزءًا من الحمولة — المرجع الحالي
+  هو `js/pages/*`.

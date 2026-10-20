@@ -10,7 +10,9 @@ const POST_COLUMNS = `
        p.post_url,
        p.post_key,
        p.post_type,
+       p.platform,
        p.comment_reply_variants,
+       p.comment_reply_index,
        p.is_active,
        p.created_at,
        p.updated_at,
@@ -48,11 +50,15 @@ const POST_JOINS = `
          WHERE k2.post_id = p.id
       ) hh ON TRUE`;
 
-/** قائمة المنشورات مع بحث/فلترة وترقيم. */
-async function listPosts({ search, status, page, limit }) {
+/** قائمة المنشورات مع بحث/فلترة وترقيم — مقيّضة بالمنصّة (الافتراضي فيسبوك). */
+async function listPosts({ search, status, page, limit, platform = 'facebook' }) {
   const conditions = [];
   const params = [];
   let p = 1;
+
+  conditions.push(`p.platform = $${p}`);
+  params.push(platform);
+  p += 1;
 
   if (search && search.trim() !== '') {
     const pattern = `%${search.trim()}%`;
@@ -111,24 +117,35 @@ function statsFromPost(post) {
   };
 }
 
-/** إيجاد منشور بنفس post_key (لكشف التكرار). */
-async function findPostByKey(postKey, excludeId = null) {
+/**
+ * إيجاد منشور بنفس post_key داخل منصّة محددة (لكشف التكرار).
+ * التفرّد في القاعدة: UNIQUE (platform, post_key).
+ */
+async function findPostByKey(platform, key, excludeId = null) {
+  let pf = platform;
+  if (pf !== 'facebook' && pf !== 'instagram') {
+    // استدعاء قديم بالصيغة findPostByKey(postKey, excludeId) — فيسبوك افتراضيًا.
+    excludeId = key;
+    key = platform;
+    pf = 'facebook';
+  }
   const result = await pool.query(
     `SELECT id FROM bot_posts
-      WHERE post_key = $1
-        AND ($2::bigint IS NULL OR id <> $2::bigint)
+      WHERE platform = $1
+        AND post_key = $2
+        AND ($3::bigint IS NULL OR id <> $3::bigint)
       LIMIT 1`,
-    [postKey, excludeId]
+    [pf, key, excludeId]
   );
   return result.rows[0] || null;
 }
 
-async function createPost({ title, postUrl, postKey, postType, variants, isActive }) {
+async function createPost({ title, postUrl, postKey, postType, variants, isActive, platform = 'facebook' }) {
   const result = await pool.query(
-    `INSERT INTO bot_posts (title, post_url, post_key, post_type, comment_reply_variants, is_active)
-     VALUES ($1, $2, $3, $4, $5, $6)
-     RETURNING id, title, post_url, post_key, post_type, comment_reply_variants, is_active, created_at, updated_at`,
-    [title, postUrl, postKey, postType, variants, isActive]
+    `INSERT INTO bot_posts (title, post_url, post_key, post_type, comment_reply_variants, is_active, platform)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     RETURNING id, title, post_url, post_key, post_type, platform, comment_reply_variants, comment_reply_index, is_active, created_at, updated_at`,
+    [title, postUrl, postKey, postType, variants, isActive, platform]
   );
   return result.rows[0];
 }
@@ -163,7 +180,7 @@ async function updatePost(id, fields) {
     `UPDATE bot_posts
         SET ${sets.join(', ')}
       WHERE id = $${p}::bigint
-      RETURNING id, title, post_url, post_key, post_type, comment_reply_variants, is_active, created_at, updated_at`,
+      RETURNING id, title, post_url, post_key, post_type, platform, comment_reply_variants, comment_reply_index, is_active, created_at, updated_at`,
     params
   );
   return result.rows[0] || null;
@@ -200,8 +217,11 @@ async function normalizeKeyword(keyword) {
 /**
  * كشف تعارض كلمة مفتاحية نشطة تنتمي لمنشور نشط (عقد n8n #3).
  * excludeKeywordId لاستثناء الكلمة نفسها عند التعديل.
+ * القاعدة العالمية تعمل لمنشورات فيسبوك فقط؛ إنستغرام لا تعارض بين المنشورات
+ * (التفرّد داخل المنشور فقط عبر قيد القاعدة) — تُرجع null بلا استعلام.
  */
-async function findConflictingKeyword(normalized, excludeKeywordId = null) {
+async function findConflictingKeyword(normalized, excludeKeywordId = null, platform = 'facebook') {
+  if (platform === 'instagram') return null;
   const result = await pool.query(
     `SELECT p.title, p.post_url
        FROM bot_post_keywords k
@@ -209,6 +229,7 @@ async function findConflictingKeyword(normalized, excludeKeywordId = null) {
       WHERE k.keyword_normalized = $1
         AND k.is_active = TRUE
         AND p.is_active = TRUE
+        AND p.platform = 'facebook'
         AND ($2::bigint IS NULL OR k.id <> $2::bigint)
       LIMIT 1`,
     [normalized, excludeKeywordId]
@@ -219,8 +240,10 @@ async function findConflictingKeyword(normalized, excludeKeywordId = null) {
 /**
  * كشف تعارض عند إعادة تفعيل المنشور: هل توجد كلمة نشطة فـ هذا المنشور
  * تتشارك نفس keyword_normalized مع كلمة نشطة فـ منشور آخر نشط؟
+ * لمنشورات فيسبوك فقط — إنستغرام يُرجع null (لا تعارض بين المنشورات).
  */
-async function findReactivationConflict(postId) {
+async function findReactivationConflict(postId, platform = 'facebook') {
+  if (platform === 'instagram') return null;
   const result = await pool.query(
     `SELECT o.title, o.post_url, k.keyword
        FROM bot_post_keywords k
@@ -229,6 +252,7 @@ async function findReactivationConflict(postId) {
         AND k2.is_active = TRUE
         AND k2.id <> k.id
        JOIN bot_posts o ON o.id = k2.post_id AND o.is_active = TRUE
+                          AND o.platform = 'facebook'
       WHERE k.post_id = $1::bigint
         AND k.is_active = TRUE
       LIMIT 1`,
@@ -240,7 +264,7 @@ async function findReactivationConflict(postId) {
 async function listKeywords(postId) {
   const result = await pool.query(
     `SELECT id, post_id, keyword, keyword_normalized, dm_message,
-            stop_bot_after_send, is_active, hits_count, created_at, updated_at
+            stop_bot_after_send, is_active, hits_count, platform, created_at, updated_at
        FROM bot_post_keywords
       WHERE post_id = $1::bigint
       ORDER BY id ASC`,
@@ -252,7 +276,8 @@ async function listKeywords(postId) {
 async function getKeywordById(id) {
   const result = await pool.query(
     `SELECT k.id, k.post_id, k.keyword, k.keyword_normalized, k.dm_message,
-            k.stop_bot_after_send, k.is_active, k.hits_count, k.created_at, k.updated_at,
+            k.stop_bot_after_send, k.is_active, k.hits_count, k.platform,
+            k.created_at, k.updated_at,
             p.title AS post_title, p.post_url AS post_url, p.is_active AS post_is_active
        FROM bot_post_keywords k
        JOIN bot_posts p ON p.id = k.post_id
@@ -268,7 +293,7 @@ async function createKeyword(postId, data) {
        (post_id, keyword, keyword_normalized, dm_message, stop_bot_after_send, is_active)
      VALUES ($1::bigint, $2, $3, $4, $5, $6)
      RETURNING id, post_id, keyword, keyword_normalized, dm_message,
-               stop_bot_after_send, is_active, hits_count, created_at, updated_at`,
+               stop_bot_after_send, is_active, hits_count, platform, created_at, updated_at`,
     [postId, data.keyword, data.keywordNormalized, data.dmMessage, data.stopBotAfterSend, data.isActive]
   );
   return result.rows[0];
@@ -303,7 +328,7 @@ async function updateKeyword(id, fields) {
         SET ${sets.join(', ')}
       WHERE id = $${p}::bigint
       RETURNING id, post_id, keyword, keyword_normalized, dm_message,
-                stop_bot_after_send, is_active, hits_count, created_at, updated_at`,
+                stop_bot_after_send, is_active, hits_count, platform, created_at, updated_at`,
     params
   );
   return result.rows[0] || null;
@@ -445,15 +470,30 @@ async function resetVariantIndex(postId) {
 
 /* ============================ SUMMARY ============================ */
 
-async function getSummary() {
+/** إحصائيات مجمّعة مقيّضة بمنصّة واحدة (الافتراضي فيسبوك) — نفس شكل الاستجابة. */
+async function getSummary(platform = 'facebook') {
   const result = await pool.query(
     `SELECT
-       (SELECT COUNT(*)::int FROM bot_posts) AS total_posts,
-       (SELECT COUNT(*)::int FROM bot_posts WHERE is_active) AS active_posts,
-       (SELECT COUNT(*)::int FROM bot_post_comments) AS total_comments,
-       (SELECT COUNT(*)::int FROM bot_post_comments WHERE reply_status = 'replied') AS replied_comments,
-       (SELECT COUNT(*)::int FROM bot_post_comments WHERE reply_status = 'failed') AS failed_comments,
-       (SELECT COUNT(*)::int FROM bot_keyword_hits) AS total_hits`
+       (SELECT COUNT(*)::int FROM bot_posts WHERE platform = $1) AS total_posts,
+       (SELECT COUNT(*)::int FROM bot_posts WHERE platform = $1 AND is_active) AS active_posts,
+       (SELECT COUNT(*)::int
+          FROM bot_post_comments c
+          JOIN bot_posts p ON p.id = c.post_id
+         WHERE p.platform = $1) AS total_comments,
+       (SELECT COUNT(*)::int
+          FROM bot_post_comments c
+          JOIN bot_posts p ON p.id = c.post_id
+         WHERE p.platform = $1 AND c.reply_status = 'replied') AS replied_comments,
+       (SELECT COUNT(*)::int
+          FROM bot_post_comments c
+          JOIN bot_posts p ON p.id = c.post_id
+         WHERE p.platform = $1 AND c.reply_status = 'failed') AS failed_comments,
+       (SELECT COUNT(*)::int
+          FROM bot_keyword_hits h
+          JOIN bot_post_keywords k ON k.id = h.keyword_id
+          JOIN bot_posts p ON p.id = k.post_id
+         WHERE p.platform = $1) AS total_hits`,
+    [platform]
   );
   return result.rows[0];
 }

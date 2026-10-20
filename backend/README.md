@@ -7,7 +7,7 @@ Backend (Express + PostgreSQL) لداشبورد التحكم في بوت أكا�
 ## المتطلبات
 
 - Node.js LTS
-- قاعدة بيانات PostgreSQL (نفس قاعدة بيانات n8n)
+- قاعدة بيانات PostgreSQL (نفس قاعدة بيانات n8n — يدعم `DATABASE_URL` لاتصال Supabase pooler)
 
 ## التنصيب المحلي
 
@@ -21,7 +21,24 @@ npm install
 cp .env.example .env
 ```
 
-ثم عبّئ القيم الفارغة (الإجبارية: `DB_*`, `DASHBOARD_PASSWORD_HASH`, `JWT_SECRET`, `FRONTEND_URL`).
+ثم عبّئ القيم الفارغة. المتغيرات الإجبارية:
+
+| المتغير                     | الوصف                                              |
+| --------------------------- | -------------------------------------------------- |
+| `DATABASE_URL` **أو** `DB_*` | اتصال القاعدة (الكامل أو `DB_HOST/PORT/NAME/USER/PASSWORD` + `DB_SSL`) |
+| `DASHBOARD_PASSWORD_HASH`   | هاش bcrypt لكلمة سر الداشبورد                       |
+| `JWT_SECRET`                | سر توقيع الـ JWT                                   |
+| `FRONTEND_URL`              | أصل الواجهة المنشورة (لـ CORS) — يدعم فواصل لأكثر من دومين |
+
+### قاعدة البيانات
+
+يُفضَّل `DATABASE_URL` (يُفعِّل SSL تلقائيًا — مناسب لـ Supabase Transaction/Session pooler):
+
+```bash
+DATABASE_URL=postgresql://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres
+```
+
+إن لم يُضبط، تُستعمل القيم الفردية `DB_*` مع `DB_SSL=true` عند الحاجة.
 
 ### توليد `DASHBOARD_PASSWORD_HASH`
 
@@ -48,24 +65,57 @@ openssl rand -hex 32
 ### `FRONTEND_URL`
 
 أصل الواجهة المنشورة (Netlify URL) — يُقيَّد به CORS. ممنوع `*` في الإنتاج؛ إن نشرت الواجهة
-على أكثر من دومين، اكتبها مفصولة بفواصل.
+على أكثر من دومين، اكتبها مفصولة بفواصل. أي أصل آخر → `403 Not allowed by CORS`.
 
-### `FB_PAGE_ACCESS_TOKEN` و `FB_GRAPH_VERSION`
+### `DASHBOARD_API_KEY`
 
-يُستعملان لاستخراج **المعرّف الرقمي** للمنشور تلقائيًا عندما يحتوي الرابط على رمز `pfbid`
-بدل المعرّف الرقمي (مثال: `.../posts/pfbid0AbC...` أو `story_fbid=pfbid0AbC...`).
+مفتاح ثابت (ولّده بـ `openssl rand -hex 32`) — **بديل برمجي فقط** للاستعمال الخارجي
+(سكريبتات/تكاملات) عبر ترويسة `X-API-Key`. ماشي للداشبورد؛ الداشبورد دائمًا يستعمل JWT.
+اختياري: إن لم يُضبط، يبقى القبول بالـ `X-API-Key` معطّلًا.
+
+### Facebook Graph API
+
+تُستعمل لاستخراج **المعرّف الرقمي** للمنشور تلقائيًا عندما يحتوي الرابط على رمز `pfbid`
+بدل المعرّف الرقمي (مثال: `.../posts/pfbid0AbC...` أو `story_fbid=pfbid0AbC...`)، وللرد على
+التعليقات عبر الـ Graph API.
 
 - `FB_PAGE_ACCESS_TOKEN`: رمز وصول الصفحة (Page access token) — **نفس الرمز الذي يستعمله n8n**.
   - **اختياري لكن موصى به**: إن لم يُضبط، تبقى الميزة **معطّلة بصمت** ويعمل كل شيء كما قبل
     (يُطلب المعرّف يدويًا عند الحاجة). لا يُرسَل هذا الرمز أبدًا إلى الواجهة ولا يُسجَّل في اللوغات،
     ويُمرَّر فقط في ترويسة `Authorization: Bearer`.
-- `FB_GRAPH_VERSION`: إصدار Graph API المستعمل في هذا البحث. اختياري، والقيمة الافتراضية `v21.0`.
+- `FB_GRAPH_VERSION`: إصدار Graph API المستعمل في بحث `pfbid`. اختياري، والقيمة الافتراضية `v21.0`.
+- `FB_API_VERSION`: إصدار Graph API المستعمل في إرسال الرسائل (`me/messages`) من شاشة الرد يدويًا.
+  اختياري، والقيمة الافتراضية `v21.0`.
 
 طريقة العمل عند إنشاء/تعديل منشور بلا معرّف يدوي:
 `extractPostKey` (معرّف رقمي مباشر) ← محوّل الروابط المختصرة (`resolveShortUrl`) ←
 `resolveNumericPostId` (بحث Graph API عن `pfbid`). عند النجاح يُخزَّن المعرّف الرقمي ويُرجَع
 `{ key_resolved_via: "graph-direct" | "graph-scan" }` في الاستجابة، مع **الإبقاء على الرابط كما
 أدخله المستخدم**.
+
+### Google Sheets (صفحة الطلبات Orders) — OAuth2
+
+نفس مبدأ credential "Google Sheets account" في n8n: تطبيق OAuth بدل Service Account.
+
+1. أنشئ OAuth Client في Google Cloud Console > APIs & Services > Credentials ثم فعّل
+   "Google Sheets API". أضف في Authorized redirect URIs:
+   `http://127.0.0.1:3010/oauth2callback`
+   وإن كان تطبيقك في وضع "Testing" أضف حسابك لقائمة Test users.
+2. املأ `GOOGLE_CLIENT_ID` و `GOOGLE_CLIENT_SECRET`، ثم شغّل:
+
+   ```bash
+   node scripts/google-oauth.js
+   ```
+
+   ليفتح شاشة الموافقة ويكتب `GOOGLE_REFRESH_TOKEN` تلقائيًا في `.env`. الصلاحية المطلوبة
+   read + write (لتحديث حالة الطلبيات) — لذا إن كان توكنك قديمًا من نسخة "readonly" فأعد
+   تشغيل السكريبت.
+3. الحساب المرتبط بالتوكن يجب أن يرى الشيت (شارك الشيت معه كـ Viewer على الأقل).
+
+| المتغير             | الوصف                                                        |
+| ------------------- | ------------------------------------------------------------ |
+| `GOOGLE_SHEET_ID`   | معرف الشيت (الافتراضي: شيت الطلبات الحالي)                    |
+| `GOOGLE_SHEET_TAB`  | اسم تبويب الطلبات (الافتراضي `ORDER`)                        |
 
 ## التشغيل محليًا
 
@@ -79,7 +129,8 @@ npm run dev   # nodemon
 npm start
 ```
 
-السيرفر يستمع على `PORT` من `.env` (افتراضيًا 3000).
+السيرفر يستمع على `PORT` من `.env` (افتراضيًا 3000؛ راجع `frontend/js/config.js` حيث يشير
+الواجهة محليًا إلى `http://localhost:3001`).
 
 ## الحماية (Login Gate)
 
@@ -94,42 +145,85 @@ npm start
 
 ## النقاط المتاحة
 
-| Method | Path                              | الحماية     | الوصف                                            |
-| ------ | --------------------------------- | ----------- | ------------------------------------------------ |
-| POST   | `/api/auth/login`                 | rate limit  | تسجيل الدخول: يرجّع `{ token }` (JWT لمدة 7 أيام) |
-| GET    | `/api/health`                     | بلا         | فحص الحالة ووصل قاعدة البيانات (`db: true/false`) |
-| GET    | `/api/conversations`              | JWT         | قائمة المحادثات (بحث/فلترة/ترقيم صفحات)          |
-| GET    | `/api/conversations/:id`          | JWT         | تفاصيل محادثة + رسائل + أحداث                    |
-| POST   | `/api/conversations/:id/toggle`   | JWT         | تشغيل/إيقاف البوت (`enabled: true/false`, اختياري `changed_by`) |
-| POST   | `/api/conversations/:id/reply`    | JWT         | إرسال رد عبر المنصة وتسجيله                       |
-| POST   | `/api/conversations/:id/pause`    | JWT         | إيقاف البوت مؤقتًا (دقائق)                       |
-| POST   | `/api/conversations/:id/notes`    | JWT         | حفظ ملاحظة داخلية ≤ 2000 حرف                     |
-| GET    | `/api/conversations/:id/order`    | JWT         | آخر طلبية مرتبطة بالمحادثة                       |
-| GET    | `/api/stats`                      | JWT         | إحصائيات مختصرة للوحة                            |
-| GET    | `/api/analytics`                  | JWT         | تحليلات (يومي/أسبوعي)                            |
-| GET    | `/api/contacts`                   | JWT         | قائمة جهات الاتصال + فلاتر                       |
-| GET    | `/api/orders`                     | JWT         | الطلبيات من Google Sheets (بحث/فلترة/ترقيم)      |
-| PATCH  | `/api/orders/:orderNumber/status` | JWT         | تحديث حالة طلبية في الشيت                        |
+جميع المسارات أدناه محمية بـ JWT (إلا ما هو مذكور).
+
+| Method | Path                              | الوصف                                                                 |
+| ------ | --------------------------------- | --------------------------------------------------------------------- |
+| POST   | `/api/auth/login`                 | rate limit — تسجيل الدخول: يرجّع `{ token }` (JWT لمدة 7 أيام)         |
+| GET    | `/api/health`                     | بلا حماية — فحص الحالة ووصل قاعدة البيانات (`db: true/false`)          |
+| GET    | `/api/conversations`              | قائمة المحادثات (بحث/فلترة/ترقيم صفحات)                               |
+| GET    | `/api/conversations/:id`          | تفاصيل محادثة + رسائل + أحداث                                          |
+| POST   | `/api/conversations/:id/toggle`   | تشغيل/إيقاف البوت (`enabled: true/false`, اختياري `changed_by`)       |
+| POST   | `/api/conversations/:id/reply`    | إرسال رد يدوي عبر Graph API وتسجيله                                   |
+| POST   | `/api/conversations/:id/pause`    | إيقاف البوت مؤقتًا (دقائق → `bot_paused_until`)                       |
+| POST   | `/api/conversations/:id/notes`    | حفظ ملاحظة داخلية ≤ 2000 حرف                                          |
+| GET    | `/api/conversations/:id/order`    | آخر طلبية مرتبطة بالمحادثة                                             |
+| GET    | `/api/stats`                      | إحصائيات مختصرة للوحة                                                  |
+| GET    | `/api/analytics`                  | تحليلات (يومي/أسبوعي)                                                  |
+| GET    | `/api/contacts`                   | قائمة جهات الاتصال + فلاتر                                              |
+| GET    | `/api/contacts/states`            | قائمة الولايات لملء فلاتر الواجهة                                      |
+| GET    | `/api/orders`                     | الطلبيات من Google Sheets (بحث/فلترة/ترقيم)                             |
+| GET    | `/api/orders/statuses`            | الحالات المتاحة (لقوائم التحديث في الواجهة)                             |
+| GET    | `/api/orders/stats`               | ملخص الطلبيات حسب الحالة                                                |
+| PATCH  | `/api/orders/:orderNumber/status` | تحديث حالة طلبية في الشيت                                              |
+| GET    | `/api/posts/summary`              | ملخص المنشورات للوحة (عدد نشط/موقوف… قبل مسار `/:id`)                 |
+| GET    | `/api/posts`                      | قائمة منشورات التعليقات التلقائية (بحث/حالة/ترقيم)                      |
+| POST   | `/api/posts`                      | إنشاء منشور (استخراج المفتاح تلقائيًا من الرابط)                        |
+| GET    | `/api/posts/:id`                  | منشور + كلماته المفتاحية + إحصاءاته                                     |
+| PATCH  | `/api/posts/:id`                  | تعديل منشور (عنوان/رابط/صيغ رد/تفعيل)                                  |
+| DELETE | `/api/posts/:id`                  | حذف منشور (409 عند وجود سجلات مرتبطة — عطّله بدلًا من ذلك)             |
+| POST   | `/api/posts/:id/keywords`         | إضافة كلمة مفتاحية (رسالة خاص + إيقاف البوت اختياريًا)                  |
+| PATCH  | `/api/posts/keywords/:keywordId`  | تعديل كلمة مفتاحية                                                      |
+| DELETE | `/api/posts/keywords/:keywordId`  | حذف كلمة مفتاحية                                                        |
+| POST   | `/api/posts/:id/next-variant`     | اختيار صيغة الرد التالية بالتناوب (Round-Robin) وتحديث العداد            |
+| GET    | `/api/posts/:id/comments`         | تعليقات المنشور (حالات: pending/replied/failed/skipped + بحث + ترقيم)   |
+| GET    | `/api/posts/:id/hits`             | إصابات (hits) المنشور (ترقيم صفحات)                                     |
+
+### قواعد مهمة في منشورات التعليقات التلقائية
+
+- صيغ الرد: حتى **10 صيغ**، كل واحدة ≤ 500 حرف، بلا تكرار — والعدّاد يُصفَّر عند تغيير الصيغ.
+- الكلمة المفتاحية: ≤ 100 حرف، ويُطبَّع نصّها (`normalizeKeyword`)؛ **لا يمكن أن تكون الكلمة
+  نفسها نشطة في منشورين في وقت واحد** (يرجع `409` باسم المنشور المتعارض).
+- رسالة الخاص: ≤ 2000 حرف. المعرّف اليدوي: أرقام فقط (8 على الأقل).
+- روابط المنشورات: HTTPS فقط، ومضبوطة على قائمة مضيفات فيسبوك المسموحة (`isAllowedHost`) —
+  حماية SSRF عند فتح الروابط المختصرة.
+
+## المهام المجدولة (Cron)
+
+`src/cron.js` يعمل داخل السيرفر نفسه (بلا مكتبات خارجية): يفحص كل **5 دقائق** البوتات
+الموقوفة مؤقتًا (`bot_paused_until`) ويعيد تفعيلها تلقائيًا عند انتهاء المدة.
 
 ## النشر على Railway / Render
 
 1. ادفع المشروع إلى GitHub (ملف `Procfile`: `web: node src/server.js`).
 2. أنشئ خدمة جديدة واربطها بالمستودع.
-3. عرّف نفس متغيرات `.env` في إعدادات الخدمة (وخصوصًا `DB_SSL=true` إذا قاعدة البيانات على نفس المنصة).
+3. عرّف نفس متغيرات `.env` في إعدادات الخدمة (وخصوصًا `DATABASE_URL` لاتصال Supabase pooler،
+   أو `DB_SSL=true` إذا قاعدة البيانات على نفس المنصة).
 4. Railway: حدد `web` كـ process type. Render: سيكشف تلقائيًا `npm start` من package.json.
 5. شغّل الخدمة. تحقق من `GET /api/health` ثم من `POST /api/auth/login`.
 6. ملاحظة: `DASHBOARD_PASSWORD_HASH` يجب أن يولَّد على جهازك ثم يُنسخ إلى إعدادات الخدمة
    (لا تُرسل كلمة السر النصية أبدًا).
 
-## هيكل المشروع
+> يقدّم السيرفر ملفات الواجهة الثابتة أيضًا (`express.static` لـ `frontend/`)، فيمكن نشر
+> الاثنين معًا من دومين واحد؛ لكن النشر المعتاد: الواجهة على Netlify والسيرفر على Render.
+
+## الهيكل والتثبيتات (Migrations)
 
 ```
 backend/
 ├── src/
-│   ├── config/db.js
+│   ├── config/
+│   │   ├── db.js               # اتصال pg (DATABASE_URL أو DB_*)
+│   │   └── googleSheets.js     # عميل Google Sheets (OAuth2 + refresh token)
 │   ├── middleware/
-│   │   ├── auth.js
+│   │   ├── auth.js             # JWT Bearer + بديل X-API-Key
 │   │   └── errorHandler.js
+│   ├── repositories/           # كل استعلامات SQL
+│   │   ├── conversations.repo.js
+│   │   ├── posts.repo.js
+│   │   ├── contacts.repo.js
+│   │   ├── analytics.repo.js
+│   │   └── stats.repo.js
 │   ├── routes/
 │   │   ├── auth.routes.js
 │   │   ├── health.routes.js
@@ -137,16 +231,25 @@ backend/
 │   │   ├── stats.routes.js
 │   │   ├── analytics.routes.js
 │   │   ├── contacts.routes.js
-│   │   ├── orders.routes.js
+│   │   ├── orders.routes.js       # الطلبيات: يقرأ/يكتب الشيت مباشرة عبر googleSheets.js
 │   │   └── posts.routes.js
 │   ├── utils/
-│   │   ├── postKey.js
-│   │   ├── resolveShortUrl.js
-│   │   └── resolveNumericPostId.js
-│   ├── app.js
-│   └── server.js
+│   │   ├── postKey.js            # استخراج المعرّف من روابط فيسبوك
+│   │   ├── resolveShortUrl.js    # فك الروابط المختصرة (قائمة مضيفات مسموحة)
+│   │   └── resolveNumericPostId.js # بحث pfbid عبر Graph API
+│   ├── cron.js                 # إعادة تفعيل البوتات الموقوفة (كل 5 دقائق)
+│   ├── app.js                  # Express app: CORS مضيّق + helmet + static
+│   └── server.js               # نقطة التشغيل (startCronJobs + listen)
+├── migrations/                 # SQL: فهارس، bot_paused_until، عدّاد صيغ الرد
+│   ├── 002_indexes.sql
+│   ├── 003_add_bot_paused_until.sql
+│   └── 004_add_variant_index.sql
+├── scripts/
+│   └── google-oauth.js          # توليد GOOGLE_REFRESH_TOKEN تلقائيًا
 ├── .env.example
 ├── .gitignore
 ├── Procfile
 └── package.json
 ```
+
+شغّل ملفات `migrations/*.sql` على قاعدة البيانات بالترتيب (مرة واحدة لكل ملف عند التحديث).

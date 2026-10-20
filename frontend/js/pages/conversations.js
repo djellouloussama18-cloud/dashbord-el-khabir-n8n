@@ -654,6 +654,13 @@ const ConversationsPage = {
 
     topRow.appendChild(name);
 
+    if (conv.platform === "instagram") {
+      const igBadge = document.createElement("span");
+      igBadge.className = "platform-badge platform-badge--instagram";
+      igBadge.textContent = "Instagram";
+      topRow.appendChild(igBadge);
+    }
+
     if (conv.has_order) {
       const orderIcon = document.createElement("span");
       orderIcon.className = "conv-item-order";
@@ -902,6 +909,13 @@ const ConversationsPage = {
 
     this.el.chatAvatar.textContent = this.getInitial(conv.customer_name || conv.client_id);
     this.el.chatName.textContent = conv.customer_name || conv.client_id;
+
+    if (conv.platform === "instagram") {
+      const igBadge = document.createElement("span");
+      igBadge.className = "platform-badge platform-badge--instagram";
+      igBadge.textContent = "Instagram";
+      this.el.chatName.appendChild(igBadge);
+    }
 
     const platform = conv.platform || "unknown";
     this.el.chatPlatformIcon.textContent = this.getPlatformIcon(platform);
