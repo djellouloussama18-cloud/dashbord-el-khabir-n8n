@@ -1413,7 +1413,7 @@ const PostsPage = {
     } else {
       node = document.createElement("img");
       node.alt = "معاينة الوسائط";
-      node.loading = "lazy";
+      // لا نستعمل loading="lazy": العنصر مخفي حتى يكتمل التحميل، وقد لا يبدأ التحميل أصلًا.
       readyEvent = "load";
     }
     node.className = "media-preview-el";
@@ -1430,7 +1430,7 @@ const PostsPage = {
         this.el(
           "div",
           "media-preview-error",
-          "تعذّر تحميل المعاينة. تأكد أن الرابط مباشر ومتاح للعموم."
+          "لم تُحمّل المعاينة هنا (قد يمنع الموقع العرض المباشر أو يتطلب الرابط تسجيل دخول). عند الحفظ سيتحقق الخادم من الرابط."
         )
       );
     });
@@ -1497,7 +1497,8 @@ const PostsPage = {
       this.buildMessengerBubble("dm", dmMessage ? dmMessage : "رسالة الخاص…")
     );
 
-    if (mediaUrl && mediaType) {
+    // لا نعاين إلا رابطًا مباشرًا صالحًا (رسالة الفحص/الحفظ تشرح سبب الرفض لغير الصالح)
+    if (mediaUrl && mediaType && this.validateMediaUrlClient(mediaUrl, mediaType).ok) {
       const mediaBubble = this.el("div", "messenger-bubble dm media");
       const holder = this.el("div", "messenger-media-holder");
       mediaBubble.appendChild(holder);
@@ -2041,13 +2042,33 @@ const PostsPage = {
       if (onBusyChange) onBusyChange(busy);
     };
 
-    const refresh = () => {
-      previewHost.textContent = "";
-      removeBtn.disabled = state.busy || state.type === "none";
-      if (state.type !== "none" && state.url) {
-        this.renderMediaPreview(previewHost, state.url, state.type);
+    let previewTimer = null;
+    const clearPreviewTimer = () => {
+      if (previewTimer) {
+        clearTimeout(previewTimer);
+        previewTimer = null;
       }
+    };
+
+    const refresh = () => {
+      removeBtn.disabled = state.busy || state.type === "none";
       if (onChange) onChange({ type: state.type, url: state.url });
+
+      // معاينة مؤجلة: لا نُطلق طلب تحميل مع كل حرف أثناء الكتابة
+      clearPreviewTimer();
+      const url = state.url;
+      const type = state.type;
+      previewHost.textContent = "";
+
+      // لا نحاول معاينة رابط غير مباشر/غير صالح — رسالة الفحص/الحفظ هي التي توضح السبب
+      if (type === "none" || !url) return;
+      if (!this.validateMediaUrlClient(url, type).ok) return;
+
+      previewTimer = setTimeout(() => {
+        previewTimer = null;
+        if (state.type !== type || state.url !== url) return;
+        this.renderMediaPreview(previewHost, url, type);
+      }, 400);
     };
 
     const activateType = (type) => {
@@ -2217,6 +2238,7 @@ const PostsPage = {
       },
       /** تنظيف كامل (إغلاق النافذة / إتمام الحفظ) — لا روابط مؤقتة معلّقة. */
       destroy: () => {
+        clearPreviewTimer();
         previewHost.textContent = "";
         state.url = "";
         state.checkedUrl = "";
