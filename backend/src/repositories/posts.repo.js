@@ -150,6 +150,67 @@ async function createPost({ title, postUrl, postKey, postType, variants, isActiv
   return result.rows[0];
 }
 
+/**
+ * إنشاء المنشور + الكلمة المفتاحية الأولى (مع مرفقها) في معاملة واحدة:
+ * أي فشل في التحقق أو الإدراج يترك بلا منشور نصيف.
+ * firstKeyword = { keyword, keywordNormalized, dmMessage, stopBotAfterSend, isActive, mediaUrl, mediaType }
+ */
+async function createPostWithFirstKeyword({
+  title,
+  postUrl,
+  postKey,
+  postType,
+  variants,
+  isActive,
+  platform = 'facebook',
+  firstKeyword = null,
+}) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const postResult = await client.query(
+      `INSERT INTO bot_posts (title, post_url, post_key, post_type, comment_reply_variants, is_active, platform)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING id, title, post_url, post_key, post_type, platform, comment_reply_variants, comment_reply_index, is_active, created_at, updated_at`,
+      [title, postUrl, postKey, postType, variants, isActive, platform]
+    );
+    const post = postResult.rows[0];
+
+    let keyword = null;
+    if (firstKeyword) {
+      const keywordResult = await client.query(
+        `INSERT INTO bot_post_keywords
+           (post_id, keyword, keyword_normalized, dm_message, stop_bot_after_send, is_active, media_type, media_url)
+         VALUES ($1::bigint, $2, $3, $4, $5, $6, $7, $8)
+         RETURNING id, post_id, keyword, keyword_normalized, dm_message,
+                   stop_bot_after_send, is_active, hits_count, platform,
+                   media_type, media_url,
+                   created_at, updated_at`,
+        [
+          post.id,
+          firstKeyword.keyword,
+          firstKeyword.keywordNormalized,
+          firstKeyword.dmMessage,
+          firstKeyword.stopBotAfterSend,
+          firstKeyword.isActive,
+          firstKeyword.mediaType === undefined ? null : firstKeyword.mediaType,
+          firstKeyword.mediaUrl === undefined ? null : firstKeyword.mediaUrl,
+        ]
+      );
+      keyword = keywordResult.rows[0];
+    }
+
+    await client.query('COMMIT');
+    return { post, keyword };
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 const POST_UPDATE_COLUMNS = {
   title: 'title',
   post_url: 'post_url',
@@ -264,7 +325,9 @@ async function findReactivationConflict(postId, platform = 'facebook') {
 async function listKeywords(postId) {
   const result = await pool.query(
     `SELECT id, post_id, keyword, keyword_normalized, dm_message,
-            stop_bot_after_send, is_active, hits_count, platform, created_at, updated_at
+            stop_bot_after_send, is_active, hits_count, platform,
+            media_type, media_url,
+            created_at, updated_at
        FROM bot_post_keywords
       WHERE post_id = $1::bigint
       ORDER BY id ASC`,
@@ -277,6 +340,7 @@ async function getKeywordById(id) {
   const result = await pool.query(
     `SELECT k.id, k.post_id, k.keyword, k.keyword_normalized, k.dm_message,
             k.stop_bot_after_send, k.is_active, k.hits_count, k.platform,
+            k.media_type, k.media_url,
             k.created_at, k.updated_at,
             p.title AS post_title, p.post_url AS post_url, p.is_active AS post_is_active
        FROM bot_post_keywords k
@@ -290,11 +354,22 @@ async function getKeywordById(id) {
 async function createKeyword(postId, data) {
   const result = await pool.query(
     `INSERT INTO bot_post_keywords
-       (post_id, keyword, keyword_normalized, dm_message, stop_bot_after_send, is_active)
-     VALUES ($1::bigint, $2, $3, $4, $5, $6)
+       (post_id, keyword, keyword_normalized, dm_message, stop_bot_after_send, is_active, media_type, media_url)
+     VALUES ($1::bigint, $2, $3, $4, $5, $6, $7, $8)
      RETURNING id, post_id, keyword, keyword_normalized, dm_message,
-               stop_bot_after_send, is_active, hits_count, platform, created_at, updated_at`,
-    [postId, data.keyword, data.keywordNormalized, data.dmMessage, data.stopBotAfterSend, data.isActive]
+               stop_bot_after_send, is_active, hits_count, platform,
+               media_type, media_url,
+               created_at, updated_at`,
+    [
+      postId,
+      data.keyword,
+      data.keywordNormalized,
+      data.dmMessage,
+      data.stopBotAfterSend,
+      data.isActive,
+      data.mediaType === undefined ? null : data.mediaType,
+      data.mediaUrl === undefined ? null : data.mediaUrl,
+    ]
   );
   return result.rows[0];
 }
@@ -305,6 +380,8 @@ const KEYWORD_UPDATE_COLUMNS = {
   dm_message: 'dm_message',
   stop_bot_after_send: 'stop_bot_after_send',
   is_active: 'is_active',
+  media_type: 'media_type',
+  media_url: 'media_url',
 };
 
 async function updateKeyword(id, fields) {
@@ -328,7 +405,9 @@ async function updateKeyword(id, fields) {
         SET ${sets.join(', ')}
       WHERE id = $${p}::bigint
       RETURNING id, post_id, keyword, keyword_normalized, dm_message,
-                stop_bot_after_send, is_active, hits_count, platform, created_at, updated_at`,
+                stop_bot_after_send, is_active, hits_count, platform,
+                media_type, media_url,
+                created_at, updated_at`,
     params
   );
   return result.rows[0] || null;
@@ -504,6 +583,7 @@ module.exports = {
   statsFromPost,
   findPostByKey,
   createPost,
+  createPostWithFirstKeyword,
   updatePost,
   deletePost,
   normalizeKeyword,

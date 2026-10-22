@@ -175,3 +175,34 @@ const getNextPostVariant = (postId) =>
   apiFetch(`/api/posts/${encodeURIComponent(postId)}/next-variant`, {
     method: 'POST',
   });
+
+const checkMediaLink = (url, type) =>
+  apiFetch("/api/media/check", {
+    method: "POST",
+    body: { url, type },
+  });
+
+const getMediaUploadAvailability = () => apiFetch("/api/media/upload-availability");
+
+/* رفع ملف وسائط: multipart/form-data — لا نرسل Content-Type يدويًا (الحدود يحدّدها المتصفح). */
+const uploadMedia = async (file) => {
+  const token = getToken();
+  const formData = new FormData();
+  formData.append("file", file);
+  const headers = {};
+  if (token) headers["Authorization"] = "Bearer " + token;
+  const res = await fetch(BACKEND_URL + "/api/media/upload", {
+    method: "POST",
+    headers,
+    body: formData,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error(data.error || "تعذّر رفع الملف");
+    err.status = res.status;
+    err.data = data;
+    throw err;
+  }
+  return data;
+};
+

@@ -16,6 +16,7 @@ const {
   isValidInstagramKey,
   stripInstagramTrackingParams,
 } = require('../utils/instagram');
+const { validateKeywordMedia } = require('../utils/keywordMedia');
 
 const EMPTY_NORMALIZED_MESSAGE =
   'تعذّر تطبيع الكلمة المفتاحية (الكلمة فارغة أو غير صالحة).';
@@ -40,6 +41,68 @@ const DUPLICATE_KEYWORD_ON_POST_MESSAGE =
   'هذه الكلمة المفتاحية موجودة بالفعل في هذا المنشور.';
 
 const PLATFORMS = ['facebook', 'instagram'];
+
+/**
+ * الكلمة المفتاحية الأولى (اختيارية) مع مرفقها — تُنشأ مع المنشور في نفس المعاملة.
+ * تستخدم نفس قواعد التحقق المستعملة في POST /:id/keywords (validateKeywordMedia).
+ */
+async function parseFirstKeyword(raw, platform) {
+  if (raw === undefined || raw === null) {
+    return { ok: true, value: null };
+  }
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    return { ok: false, error: 'الكلمة المفتاحية الأولى يجب أن تكون كائنًا.' };
+  }
+
+  const keyword = trimString(raw.keyword);
+  if (!keyword) {
+    return { ok: false, error: 'الكلمة المفتاحية مطلوبة.' };
+  }
+  if (keyword.length > 100) {
+    return { ok: false, error: 'الكلمة المفتاحية يجب ألا تتجاوز 100 حرف.' };
+  }
+
+  const dmMessage = trimString(raw.dm_message);
+  if (!dmMessage) {
+    return { ok: false, error: 'رسالة الخاص مطلوبة.' };
+  }
+  if (dmMessage.length > 2000) {
+    return { ok: false, error: 'رسالة الخاص يجب ألا تتجاوز 2000 حرف.' };
+  }
+
+  let stopBotAfterSend = true;
+  if (raw.stop_bot_after_send !== undefined) {
+    if (typeof raw.stop_bot_after_send !== 'boolean') {
+      return { ok: false, error: 'حقل إيقاف البوت يجب أن يكون صحيحًا/خطأ.' };
+    }
+    stopBotAfterSend = raw.stop_bot_after_send;
+  }
+
+  let isActive = true;
+  if (raw.is_active !== undefined) {
+    if (typeof raw.is_active !== 'boolean') {
+      return { ok: false, error: 'حقل التفعيل يجب أن يكون صحيحًا/خطأ.' };
+    }
+    isActive = raw.is_active;
+  }
+
+  const mediaValidation = await validateKeywordMedia(raw);
+  if (!mediaValidation.ok) {
+    return { ok: false, error: mediaValidation.error };
+  }
+
+  return {
+    ok: true,
+    value: {
+      keyword,
+      dmMessage,
+      stopBotAfterSend,
+      isActive,
+      mediaUrl: mediaValidation.mediaUrl,
+      mediaType: mediaValidation.mediaType,
+    },
+  };
+}
 
 /** يقرأ قيمة platform من query/body — null يعني قيمة غير مسموحة (400). */
 function parsePlatform(value) {
@@ -256,7 +319,31 @@ router.post('/', async (req, res, next) => {
       return res.status(409).json({ error: DUPLICATE_POST_MESSAGE });
     }
 
-    const post = await postsRepo.createPost({
+    // الكلمة المفتاحية الأولى (اختيارية) — تُنشأ مع المنشور داخل نفس المعاملة
+    const firstKeyword = await parseFirstKeyword(body.first_keyword, platform);
+    if (!firstKeyword.ok) {
+      return res.status(400).json({ error: firstKeyword.error });
+    }
+
+    let firstKeywordNormalized = null;
+    if (firstKeyword.value) {
+      firstKeywordNormalized = await postsRepo.normalizeKeyword(firstKeyword.value.keyword);
+      if (!firstKeywordNormalized) {
+        return res.status(400).json({ error: EMPTY_NORMALIZED_MESSAGE });
+      }
+      if (firstKeyword.value.isActive && isActive) {
+        const conflict = await postsRepo.findConflictingKeyword(
+          firstKeywordNormalized,
+          null,
+          platform
+        );
+        if (conflict) {
+          return res.status(409).json({ error: keywordConflictMessage(conflict) });
+        }
+      }
+    }
+
+    const { post, keyword } = await postsRepo.createPostWithFirstKeyword({
       title,
       postUrl: resolvedUrl,
       postKey,
@@ -264,14 +351,16 @@ router.post('/', async (req, res, next) => {
       variants: variants.value,
       isActive,
       platform,
+      firstKeyword: firstKeyword.value
+        ? { ...firstKeyword.value, keywordNormalized: firstKeywordNormalized }
+        : null,
     });
-    if (resolvedFrom || keyResolvedVia) {
-      const payload = { ...post };
-      if (resolvedFrom) payload.resolved_from = resolvedFrom;
-      if (keyResolvedVia) payload.key_resolved_via = keyResolvedVia;
-      return res.status(201).json(payload);
-    }
-    return res.status(201).json(post);
+
+    const payload = { ...post };
+    if (resolvedFrom) payload.resolved_from = resolvedFrom;
+    if (keyResolvedVia) payload.key_resolved_via = keyResolvedVia;
+    if (keyword) payload.first_keyword = keyword;
+    return res.status(201).json(payload);
   } catch (err) {
     if (err.code === '23505') {
       return res.status(409).json({ error: DUPLICATE_POST_MESSAGE });
@@ -342,13 +431,26 @@ router.post('/:id/keywords', async (req, res, next) => {
       }
     }
 
-    const created = await postsRepo.createKeyword(id, {
+    const mediaValidation = await validateKeywordMedia(body);
+    if (!mediaValidation.ok) {
+      return res.status(400).json({ error: mediaValidation.error });
+    }
+
+    const keywordData = {
       keyword,
       keywordNormalized: normalized,
       dmMessage,
       stopBotAfterSend,
       isActive,
-    });
+    };
+    if (mediaValidation.mediaUrl !== undefined) {
+      keywordData.mediaUrl = mediaValidation.mediaUrl;
+    }
+    if (mediaValidation.mediaType !== undefined) {
+      keywordData.mediaType = mediaValidation.mediaType;
+    }
+
+    const created = await postsRepo.createKeyword(id, keywordData);
     return res.status(201).json(created);
   } catch (err) {
     if (err.code === '23505') {
@@ -430,6 +532,17 @@ router.patch('/keywords/:keywordId', async (req, res, next) => {
       if (conflict) {
         return res.status(409).json({ error: keywordConflictMessage(conflict) });
       }
+    }
+
+    const mediaValidation = await validateKeywordMedia(body);
+    if (!mediaValidation.ok) {
+      return res.status(400).json({ error: mediaValidation.error });
+    }
+    if (mediaValidation.mediaUrl !== undefined) {
+      fields.media_url = mediaValidation.mediaUrl;
+    }
+    if (mediaValidation.mediaType !== undefined) {
+      fields.media_type = mediaValidation.mediaType;
     }
 
     const updated = await postsRepo.updateKeyword(keywordId, fields);

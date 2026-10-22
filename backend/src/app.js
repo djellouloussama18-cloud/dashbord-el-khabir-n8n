@@ -14,6 +14,7 @@ const ordersRoutes = require('./routes/orders.routes');
 const analyticsRoutes = require('./routes/analytics.routes');
 const contactsRoutes = require('./routes/contacts.routes');
 const postsRoutes = require('./routes/posts.routes');
+const mediaRoutes = require('./routes/media.routes');
 const errorHandler = require('./middleware/errorHandler');
 
 // خطأ CORS يتجاوز السياق العادي (err بلا status) — نعالجه قبل errorHandler العام
@@ -25,6 +26,10 @@ function corsErrorHandler(err, req, res, next) {
 }
 
 const app = express();
+
+// خلف بروكسي (Render) نحتاج trust proxy حتى يكون req.ip عنوان العميل الحقيقي
+// (وإلا صار كل الطلبات تحت نفس الـ rate limit).
+app.set('trust proxy', 1);
 
 app.use(helmet());
 
@@ -57,6 +62,7 @@ app.use('/api/orders', auth, ordersRoutes);
 app.use('/api/analytics', auth, analyticsRoutes);
 app.use('/api/contacts', auth, contactsRoutes);
 app.use('/api/posts', auth, postsRoutes);
+app.use('/api/media', auth, mediaRoutes);
 
 app.use(express.static(path.join(__dirname, '../../frontend')));
 

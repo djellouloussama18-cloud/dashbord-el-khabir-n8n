@@ -226,9 +226,9 @@ const PostsPage = {
      MODAL + FORM WIDGETS
      ===================================================== */
 
-  openModal({ title, bodyNodes, footerNodes }) {
+  openModal({ title, bodyNodes, footerNodes, onClose, scrollable = false }) {
     const backdrop = this.el("div", "modal-backdrop");
-    const modal = this.el("div", "modal");
+    const modal = this.el("div", "modal" + (scrollable ? " modal-scroll" : ""));
 
     const header = this.el("div", "modal-header");
     header.appendChild(this.el("h3", "modal-title", title));
@@ -257,6 +257,7 @@ const PostsPage = {
       closed = true;
       document.removeEventListener("keydown", onKey);
       backdrop.remove();
+      if (onClose) onClose();
     };
     document.addEventListener("keydown", onKey);
     closeBtn.addEventListener("click", close);
@@ -728,6 +729,10 @@ const PostsPage = {
     const dmField = this.buildField("رسالة الخاص", dmInput);
     dmField.appendChild(dmCounter);
 
+    // خطأ خاص بحقل رسالة الخاص (يظهر أسفل الحقل)
+    const dmError = this.el("div", "field-error hidden");
+    dmField.appendChild(dmError);
+
     const manualInput = this.el("input", "form-input");
     manualInput.type = "text";
     manualInput.placeholder = isIg ? "مثال: Cabc123XYZ" : "مثال: 1234567890123";
@@ -736,12 +741,59 @@ const PostsPage = {
       isIg ? "الـ Shortcode أو المعرّف الرقمي للوسائط" : "معرّف المنشور (يدويًا)",
       manualInput,
       isIg
-        ? "الـ Shortcode هو الجزء من الرابط بعد /p/ أو /reel/. لم نتعرّف على الرابط تلقائيًا — افتح المنشور الكامل وانسخ الرابط أو أدخل الـ Shortcode أو المعرّف الرقمي للوسائط."
+        ? "الـ Shortcode هو الجزء من الرابط بعد /p/ أو /reel/. لم نتعرّف على الرابط تلقائيًا — افتح المنشور الكامل وانسخ الرابط أو أدخل المعرّف الرقمي للوسائط."
         : "لم نتعرّف على الرابط تلقائيًا. افتح المنشور الكامل وانسخ الرابط، أو أدخل المعرّف الرقمي يدويًا."
     );
     manualField.style.display = "none";
 
     const errorBox = this.el("div", "modal-error hidden");
+
+    /* ---------- الكلمة المفتاحية الأولى: مرفق وسائط + معاينة ---------- */
+    // نفس مكوّن نموذج الكلمة المفتاحية (بلا تكرار).
+    // let لأنها تُستعمل داخل refreshPreview قبل إسناد قيمتها.
+    let mediaField = null;
+
+    // المعاينة مطوية افتراضيًا على الشاشات الصغيرة (النافذة طويلة).
+    const previewPanel = this.buildCustomerPreviewPanel({
+      collapsed: typeof window !== "undefined" && window.innerWidth < 768,
+    });
+
+    const refreshPreview = () => {
+      const media = mediaField ? mediaField.getValue() : { type: "none", url: "" };
+      previewPanel.update({
+        post: { comment_reply_variants: variants.getVariants() },
+        dmMessage: dmInput.value.trim(),
+        mediaUrl: media.type === "none" ? "" : media.url,
+        mediaType: media.type === "none" ? "" : media.type,
+      });
+    };
+
+    mediaField = this.createMediaField({
+      initialType: "none",
+      initialUrl: "",
+      onChange: refreshPreview,
+      onBusyChange: (busy) => {
+        submitBtn.disabled = busy;
+      },
+    });
+
+    const showDmError = (msg) => {
+      dmError.textContent = msg || "";
+      dmError.classList.toggle("hidden", !msg);
+    };
+
+    // قسم الوسائط لا معنى له بدون كلمة مفتاحية → نخفيه حتى تُكتب الكلمة.
+    const syncMediaVisibility = () => {
+      const hasKeyword = !!kwInput.value.trim();
+      mediaField.setVisible(hasKeyword);
+      previewPanel.element.classList.toggle("hidden", !hasKeyword);
+      if (!hasKeyword) showDmError("");
+    };
+    kwInput.addEventListener("input", syncMediaVisibility);
+    dmInput.addEventListener("input", () => {
+      showDmError("");
+      refreshPreview();
+    });
 
     const body = [
       this.buildField(
@@ -756,9 +808,13 @@ const PostsPage = {
       this.el("div", "form-section-title", "كلمة مفتاحية أولى (اختياري)"),
       this.buildField("الكلمة المفتاحية", kwInput),
       dmField,
+      mediaField.element,
+      previewPanel.element,
       manualField,
       errorBox,
     ];
+    syncMediaVisibility();
+    refreshPreview();
 
     const submitBtn = this.el("button", "notes-btn primary", "إنشاء");
     submitBtn.type = "button";
@@ -769,6 +825,13 @@ const PostsPage = {
       title: "إضافة منشور — " + this.platformName(platform),
       bodyNodes: body,
       footerNodes: [cancelBtn, submitBtn],
+      scrollable: true,
+      onClose: () => {
+        // تنظيف كامل عند الإغلاق (تفادي بقاء مرفق في النموذج)
+        mediaField.destroy();
+        mediaField.setValue({ type: "none", url: "" });
+        syncMediaVisibility();
+      },
     });
 
     cancelBtn.addEventListener("click", () => modal.close());
@@ -792,6 +855,33 @@ const PostsPage = {
         return;
       }
 
+      const kw = kwInput.value.trim();
+      const dm = dmInput.value.trim();
+      const media = mediaField.getValue();
+      const hasMedia = media.type !== "none";
+
+      // مرفق بلا كلمة مفتاحية → لا معنى له
+      if (hasMedia && !kw) {
+        showError("أدخل الكلمة المفتاحية أولاً، أو أزل مرفق الوسائط.");
+        kwInput.focus();
+        return;
+      }
+
+      // كلمة مفتاحية بلا رسالة خاص → الرسالة مطلوبة (النص أولًا ثم الوسائط)
+      if (kw && !dm) {
+        showDmError("رسالة الخاص مطلوبة عندما تُستعمل الكلمة المفتاحية (تُرسل قبل الوسائط).");
+        dmInput.focus();
+        return;
+      }
+
+      if (hasMedia) {
+        const check = mediaField.validate();
+        if (!check.ok) {
+          showError(check.error);
+          return;
+        }
+      }
+
       const payload = {
         post_url: postUrl,
         platform: platform,
@@ -801,10 +891,35 @@ const PostsPage = {
       if (manualField.style.display !== "none" && manualInput.value.trim()) {
         payload.post_key = manualInput.value.trim();
       }
+      if (kw) {
+        // الكلمة الأولى + مرفقها — تُنشأ مع المنشور في نفس المعاملة
+        payload.first_keyword = {
+          keyword: kw,
+          dm_message: dm,
+          stop_bot_after_send: true,
+          is_active: true,
+          media_url: hasMedia ? media.url : null,
+          media_type: hasMedia ? media.type : null,
+        };
+      }
 
       submitBtn.disabled = true;
       submitBtn.textContent = "جارٍ فحص الرابط...";
       try {
+        if (hasMedia) {
+          // فحص الرابط من الخادم قبل الحفظ (والخادم يتحقق مرة أخرى داخل المعاملة)
+          const verified = await mediaField.verifyLink();
+          if (!verified.ok) {
+            showError(verified.error);
+            submitBtn.disabled = false;
+            submitBtn.textContent = "إنشاء";
+            return;
+          }
+          if (verified.skipped && verified.error) {
+            this.showToast("تعذّر فحص الرابط مسبقًا، سيتحقق الخادم عند الحفظ.", "info");
+          }
+        }
+
         const created = await createPost(payload);
 
         if (created.resolved_from) {
@@ -815,26 +930,15 @@ const PostsPage = {
           this.showToast("تم استخراج المعرّف تلقائيًا من الرابط", "info");
         }
 
-        let keywordFailed = false;
-        const kw = kwInput.value.trim();
-        if (kw) {
-          try {
-            await createKeyword(created.id, {
-              keyword: kw,
-              dm_message: dmInput.value.trim() || kw,
-              stop_bot_after_send: true,
-              is_active: true,
-            });
-          } catch (err) {
-            keywordFailed = true;
-            showError("تم إنشاء المنشور، لكن تعذّر إضافة الكلمة: " + (err.message || "خطأ"));
-          }
-        }
-
         this.showToast(
-          keywordFailed ? "تم إنشاء المنشور (بدون الكلمة)" : "تم إنشاء المنشور",
+          created.first_keyword ? "تم إنشاء المنشور مع الكلمة المفتاحية" : "تم إنشاء المنشور",
           "success"
         );
+
+        // تنظيف حقل الوسائط بعد الحفظ (تفادي بقاء رابط في النموذج)
+        mediaField.destroy();
+        mediaField.setValue({ type: "none", url: "" });
+        syncMediaVisibility();
 
         // عرض المعرّف المستخرج + إغلاق
         errorBox.classList.add("hidden");
@@ -846,12 +950,6 @@ const PostsPage = {
             (isIg ? " · " + this.typeLabel(created.post_type) : "")
         );
         body.unshift(successBox);
-
-        if (keywordFailed) {
-          submitBtn.disabled = false;
-          submitBtn.textContent = "إعادة المحاولة";
-          return;
-        }
 
         submitBtn.remove();
         cancelBtn.textContent = "إغلاق";
@@ -883,6 +981,7 @@ const PostsPage = {
       id,
       post: null,
       keywords: [],
+      keywordFilter: "all",
       stats: null,
       tab: "settings",
       comments: { status: "all", search: "", page: 1, data: null, seq: 0 },
@@ -1174,6 +1273,292 @@ const PostsPage = {
     this.detailRefs.content.appendChild(danger);
   },
 
+  /* =====================================================
+     MEDIA ATTACHMENT — مرفق الوسائط (صورة أو فيديو)
+     ===================================================== */
+
+  mediaTypeLabel(type) {
+    if (type === "image") return "صورة";
+    if (type === "video") return "فيديو";
+    return "بدون وسائط";
+  },
+
+  detectMediaTypeFromUrl(url) {
+    if (!url) return null;
+    try {
+      const u = new URL(url);
+      const pathname = u.pathname.toLowerCase();
+      const dot = pathname.lastIndexOf(".");
+      if (dot === -1) return null;
+      const ext = pathname.substring(dot);
+      if ([".jpg", ".jpeg", ".png", ".gif"].indexOf(ext) !== -1) return "image";
+      if (ext === ".mp4") return "video";
+      return null;
+    } catch (err) {
+      return null;
+    }
+  },
+
+  formatMediaSize(bytes) {
+    if (bytes === null || bytes === undefined || Number.isNaN(Number(bytes))) return "غير معروف";
+    const n = Number(bytes);
+    if (n < 1024) return n + " بايت";
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " كيلوبايت";
+    return (n / (1024 * 1024)).toFixed(2) + " ميغابايت";
+  },
+
+  /** نفس قواعد الخادم (تقريبًا) للتحقق من الرابط قبل الإرسال. */
+  validateMediaUrlClient(rawUrl, type) {
+    const url = (rawUrl || "").trim();
+    if (!url) return { ok: false, error: "رابط الوسائط مطلوب." };
+    if (url.length > 2000) {
+      return { ok: false, error: "رابط الوسائط طويل جداً (الحد الأقصى 2000 حرف)." };
+    }
+    let u;
+    try {
+      u = new URL(url);
+    } catch (err) {
+      return { ok: false, error: "رابط غير صالح. تأكد من نسخ الرابط كاملًا." };
+    }
+    if (u.protocol !== "https:") {
+      return { ok: false, error: "يجب أن يبدأ الرابط بـ https://" };
+    }
+    if (u.username || u.password) {
+      return { ok: false, error: "لا يُسمح ببيانات الاعتماد داخل الرابط." };
+    }
+    const host = u.hostname.toLowerCase().replace(/^\[/, "").replace(/\]$/, "");
+    if (host === "localhost" || host.endsWith(".localhost")) {
+      return { ok: false, error: "لا يُسمح بالروابط المحلية." };
+    }
+    if (this.isPrivateMediaHost(host)) {
+      return { ok: false, error: "لا يُسمح بالروابط إلى عناوين IP الخاصة." };
+    }
+    const shareHosts = [
+      "drive.google.com",
+      "docs.google.com",
+      "dropbox.com",
+      "onedrive.live.com",
+      "sharepoint.com",
+      "1drv.ms",
+    ];
+    const isShareHost = shareHosts.some((h) => host === h || host.endsWith("." + h));
+    if (isShareHost) {
+      return {
+        ok: false,
+        error: "يجب أن يكون رابط مباشر للملف، وليس صفحة مشاركة (مثل Google Drive أو Dropbox).",
+      };
+    }
+    if (type === "image") {
+      if (this.detectMediaTypeFromUrl(url) !== "image") {
+        return { ok: false, error: "امتداد الصورة يجب أن يكون .jpg أو .jpeg أو .png أو .gif." };
+      }
+    } else if (type === "video") {
+      if (this.detectMediaTypeFromUrl(url) !== "video") {
+        return { ok: false, error: "امتداد الفيديو يجب أن يكون .mp4." };
+      }
+    }
+    return { ok: true };
+  },
+
+  /** فحص مبسّط لعنوان المضيف: هل هو IP خاص؟ (نفس قواعد الخادم) */
+  isPrivateMediaHost(host) {
+    const isIPv4 = /^\d{1,3}(\.\d{1,3}){3}$/.test(host);
+    if (isIPv4) {
+      const p = host.split(".").map((n) => parseInt(n, 10));
+      if (p.some((n) => n < 0 || n > 255)) return true;
+      const [a, b, c] = p;
+      if (a === 0 || a === 10 || a === 127) return true;
+      if (a === 100 && b >= 64 && b <= 127) return true;
+      if (a === 169 && b === 254) return true;
+      if (a === 172 && b >= 16 && b <= 31) return true;
+      if (a === 192 && b === 168) return true;
+      if (a === 192 && b === 0 && c === 0) return true;
+      if (a === 192 && b === 0 && c === 2) return true;
+      if (a === 198 && (b === 18 || b === 19)) return true;
+      if (a === 198 && b === 51 && c === 100) return true;
+      if (a === 203 && b === 0 && c === 113) return true;
+      if (a >= 224) return true;
+      return false;
+    }
+    if (host.indexOf(":") !== -1) {
+      if (host === "::1" || host === "::") return true;
+      if (host.startsWith("fe80") || host.startsWith("fc") || host.startsWith("fd")) return true;
+      if (host.startsWith("::ffff:127.") || host.startsWith("::ffff:10.")) return true;
+      if (host.startsWith("::ffff:192.168.")) return true;
+      return false;
+    }
+    return false;
+  },
+
+  /**
+   * يبني معاينة الوسائط داخل host باستخدام createElement فقط (بدون innerHTML).
+   */
+  renderMediaPreview(host, url, type) {
+    host.textContent = "";
+    if (!url || !type) return;
+
+    const wrap = this.el("div", "media-preview");
+    const loading = this.el("div", "media-preview-loading", "جارٍ تحميل المعاينة…");
+    wrap.appendChild(loading);
+
+    let node;
+    let readyEvent;
+    if (type === "video") {
+      node = document.createElement("video");
+      node.controls = true;
+      node.preload = "metadata";
+      node.playsInline = true;
+      node.muted = true;
+      readyEvent = "loadedmetadata";
+    } else {
+      node = document.createElement("img");
+      node.alt = "معاينة الوسائط";
+      node.loading = "lazy";
+      readyEvent = "load";
+    }
+    node.className = "media-preview-el";
+    node.hidden = true;
+
+    node.addEventListener(readyEvent, () => {
+      loading.remove();
+      node.hidden = false;
+    });
+    node.addEventListener("error", () => {
+      loading.remove();
+      node.remove();
+      wrap.appendChild(
+        this.el(
+          "div",
+          "media-preview-error",
+          "تعذّر تحميل المعاينة. تأكد أن الرابط مباشر ومتاح للعموم."
+        )
+      );
+    });
+
+    wrap.appendChild(node);
+    host.appendChild(wrap);
+    node.src = url;
+  },
+
+  buildMediaTypeSelector(initialType, onChange) {
+    const wrap = this.el("div", "media-type-seg");
+    wrap.setAttribute("role", "group");
+    wrap.setAttribute("aria-label", "نوع الوسائط");
+    const buttons = {};
+    [
+      { value: "none", label: "بدون" },
+      { value: "image", label: "صورة" },
+      { value: "video", label: "فيديو" },
+    ].forEach((opt) => {
+      const btn = this.el(
+        "button",
+        "media-type-btn" + (opt.value === initialType ? " active" : ""),
+        opt.label
+      );
+      btn.type = "button";
+      btn.setAttribute("aria-pressed", opt.value === initialType ? "true" : "false");
+      btn.addEventListener("click", () => {
+        Object.keys(buttons).forEach((key) => {
+          buttons[key].classList.toggle("active", key === opt.value);
+          buttons[key].setAttribute("aria-pressed", key === opt.value ? "true" : "false");
+        });
+        onChange(opt.value);
+      });
+      buttons[opt.value] = btn;
+      wrap.appendChild(btn);
+    });
+    return { wrap, buttons };
+  },
+
+  /** فقاعة محادثة Messenger مبسّطة. */
+  buildMessengerBubble(kind, text) {
+    const bubble = this.el("div", "messenger-bubble " + kind);
+    bubble.appendChild(this.el("span", "messenger-bubble-text", text));
+    return bubble;
+  },
+
+  /** معاينة "كيف يرى العميل": رد التعليق العام ثم رسالة الخاص ثم الوسائط. */
+  buildCustomerPreview(post, dmMessage, mediaUrl, mediaType) {
+    const panel = this.el("div", "customer-preview");
+    panel.appendChild(this.el("div", "customer-preview-title", "كيف يرى العميل"));
+
+    const thread = this.el("div", "messenger-thread");
+
+    const variants = (post && post.comment_reply_variants) || [];
+    const sample = variants.length
+      ? String(variants[0])
+      : "أهلًا! اكتب {keyword} في الخاص لنرسل لك التفاصيل.";
+    const commentText = sample
+      .replace(/\{keyword\}/g, "الكلمة المفتاحية")
+      .replace(/\{username\}/g, "العميل");
+    thread.appendChild(this.buildMessengerBubble("public", commentText));
+
+    thread.appendChild(
+      this.buildMessengerBubble("dm", dmMessage ? dmMessage : "رسالة الخاص…")
+    );
+
+    if (mediaUrl && mediaType) {
+      const mediaBubble = this.el("div", "messenger-bubble dm media");
+      const holder = this.el("div", "messenger-media-holder");
+      mediaBubble.appendChild(holder);
+      thread.appendChild(mediaBubble);
+      this.renderMediaPreview(holder, mediaUrl, mediaType);
+    }
+
+    panel.appendChild(thread);
+    panel.appendChild(
+      this.el(
+        "div",
+        "form-hint",
+        "1) رد البوت على التعليق (عام) — 2) رسالة الخاص — 3) الوسائط تُرسل بعد الرسالة."
+      )
+    );
+    return panel;
+  },
+
+  /**
+   * لوحة معاينة "كيف يرى العميل" قابلة للطي/ال展開 — تُحدَّث مباشرة.
+   * collapsed = true تعني مطوية عند الفتح (افتراضيًا على الشاشات الصغيرة).
+   */
+  buildCustomerPreviewPanel({ collapsed = false } = {}) {
+    const wrap = this.el("div", "customer-preview-panel");
+    const toggle = this.el("button", "customer-preview-toggle");
+    toggle.type = "button";
+    const host = this.el("div", "customer-preview-host");
+
+    let isCollapsed = !!collapsed;
+    const render = () => {
+      toggle.textContent = (isCollapsed ? "▸ " : "▾ ") + "كيف يرى العميل";
+      toggle.setAttribute("aria-expanded", isCollapsed ? "false" : "true");
+      host.classList.toggle("hidden", isCollapsed);
+    };
+
+    toggle.addEventListener("click", () => {
+      isCollapsed = !isCollapsed;
+      render();
+    });
+
+    const update = ({ post, dmMessage, mediaUrl, mediaType } = {}) => {
+      host.textContent = "";
+      host.appendChild(
+        this.buildCustomerPreview(post, dmMessage || "", mediaUrl || "", mediaType || "")
+      );
+    };
+
+    wrap.appendChild(toggle);
+    wrap.appendChild(host);
+    render();
+
+    return {
+      element: wrap,
+      update,
+      collapse: () => {
+        isCollapsed = true;
+        render();
+      },
+    };
+  },
+
   /* ---------------- KEYWORDS TAB ---------------- */
 
   renderKeywordsTab() {
@@ -1206,8 +1591,45 @@ const PostsPage = {
       return;
     }
 
+    // فلتر سريع: الكلمات التي تحتوي وسائط / بدون وسائط
+    const withMedia = d.keywords.filter((kw) => !!kw.media_url).length;
+    const filters = [
+      { value: "all", label: "الكل", count: d.keywords.length },
+      { value: "media", label: "بوسائط", count: withMedia },
+      { value: "none", label: "بدون وسائط", count: d.keywords.length - withMedia },
+    ];
+    const chips = this.el("div", "posts-chips");
+    filters.forEach((f) => {
+      const chip = this.el(
+        "button",
+        "posts-chip" + (d.keywordFilter === f.value ? " active" : ""),
+        f.label + " (" + f.count + ")"
+      );
+      chip.type = "button";
+      chip.addEventListener("click", () => {
+        d.keywordFilter = f.value;
+        this.renderDetailContent();
+      });
+      chips.appendChild(chip);
+    });
+    wrap.appendChild(chips);
+
+    const visible = d.keywords.filter((kw) => {
+      if (d.keywordFilter === "media") return !!kw.media_url;
+      if (d.keywordFilter === "none") return !kw.media_url;
+      return true;
+    });
+
+    if (!visible.length) {
+      wrap.appendChild(
+        this.el("div", "posts-empty", "لا توجد كلمات مطابقة لهذا الفلتر.")
+      );
+      this.detailRefs.content.appendChild(wrap);
+      return;
+    }
+
     const list = this.el("div", "keyword-list");
-    d.keywords.forEach((kw) => list.appendChild(this.buildKeywordCard(kw)));
+    visible.forEach((kw) => list.appendChild(this.buildKeywordCard(kw)));
     wrap.appendChild(list);
     this.detailRefs.content.appendChild(wrap);
   },
@@ -1220,6 +1642,15 @@ const PostsPage = {
 
     if (kw.stop_bot_after_send) {
       top.appendChild(this.el("span", "keyword-badge", "إيقاف البوت بعد الإرسال"));
+    }
+    if (kw.media_url && kw.media_type) {
+      const badge = this.el("button", "keyword-media-badge " + kw.media_type);
+      badge.type = "button";
+      badge.title = "معاينة الوسائط المرفقة";
+      badge.appendChild(this.el("span", "keyword-media-icon"));
+      badge.appendChild(this.el("span", null, this.mediaTypeLabel(kw.media_type)));
+      badge.addEventListener("click", () => this.openMediaPreviewModal(kw));
+      top.appendChild(badge);
     }
     top.appendChild(
       this.el("span", "keyword-hits", "إصابات: " + (kw.hits_count || 0))
@@ -1275,6 +1706,28 @@ const PostsPage = {
 
     card.appendChild(actions);
     return card;
+  },
+
+  /** نافذة معاينة الوسائط المرفقة بالكلمة المفتاحية. */
+  openMediaPreviewModal(kw) {
+    const holder = this.el("div", "media-modal-holder");
+    const body = [
+      this.el(
+        "div",
+        "form-hint",
+        "الكلمة: " + kw.keyword + " — النوع: " + this.mediaTypeLabel(kw.media_type)
+      ),
+      holder,
+    ];
+    const closeBtn = this.el("button", "notes-btn ghost", "إغلاق");
+    closeBtn.type = "button";
+    const modal = this.openModal({
+      title: "معاينة الوسائط",
+      bodyNodes: body,
+      footerNodes: [closeBtn],
+    });
+    closeBtn.addEventListener("click", () => modal.close());
+    this.renderMediaPreview(holder, kw.media_url, kw.media_type);
   },
 
   async reloadKeywords() {
@@ -1333,9 +1786,38 @@ const PostsPage = {
 
     const errorBox = this.el("div", "modal-error hidden");
 
+    const submitBtn = this.el("button", "notes-btn primary", isEdit ? "حفظ" : "إضافة");
+    submitBtn.type = "button";
+
+    /* ---------- معاينة "كيف يرى العميل" ---------- */
+    const previewPanel = this.buildCustomerPreviewPanel({ collapsed: false });
+    // let (وليست const) لأن حقل الوسائط يبني نفسه ويحدّث المعاينة أثناء الإنشاء
+    let mediaField = null;
+    const refreshPreview = () => {
+      const media = mediaField ? mediaField.getValue() : { type: "none", url: "" };
+      previewPanel.update({
+        post: this.state.detail.post,
+        dmMessage: dmInput.value.trim(),
+        mediaUrl: media.type === "none" ? "" : media.url,
+        mediaType: media.type === "none" ? "" : media.type,
+      });
+    };
+
+    /* ---------- قسم مرفق الوسائط (نفس المكوّن المستعمل في نافذة إضافة منشور) ---------- */
+    mediaField = this.createMediaField({
+      initialType: isEdit && keyword.media_type ? keyword.media_type : "none",
+      initialUrl: isEdit && keyword.media_url ? keyword.media_url : "",
+      onChange: refreshPreview,
+      onBusyChange: (busy) => {
+        submitBtn.disabled = busy;
+      },
+    });
+
     const body = [
       this.buildField("الكلمة المفتاحية *", kwInput),
       dmField,
+      mediaField.element,
+      previewPanel.element,
       stopRow,
       stopHint,
     ];
@@ -1350,8 +1832,6 @@ const PostsPage = {
     }
     body.push(activeRow, errorBox);
 
-    const submitBtn = this.el("button", "notes-btn primary", isEdit ? "حفظ" : "إضافة");
-    submitBtn.type = "button";
     const cancelBtn = this.el("button", "notes-btn ghost", "إلغاء");
     cancelBtn.type = "button";
 
@@ -1359,6 +1839,9 @@ const PostsPage = {
       title: isEdit ? "تعديل كلمة مفتاحية" : "إضافة كلمة مفتاحية",
       bodyNodes: body,
       footerNodes: [cancelBtn, submitBtn],
+      onClose: () => {
+        mediaField.destroy();
+      },
     });
     cancelBtn.addEventListener("click", () => modal.close());
 
@@ -1366,6 +1849,9 @@ const PostsPage = {
       errorBox.textContent = msg;
       errorBox.classList.remove("hidden");
     };
+
+    dmInput.addEventListener("input", refreshPreview);
+    refreshPreview();
 
     submitBtn.addEventListener("click", async () => {
       errorBox.classList.add("hidden");
@@ -1382,16 +1868,40 @@ const PostsPage = {
         return;
       }
 
+      const media = mediaField.getValue();
+      if (media.type !== "none") {
+        const check = this.validateMediaUrlClient(media.url, media.type);
+        if (!check.ok) {
+          showError(check.error);
+          return;
+        }
+      }
+
       const payload = {
         keyword: kw,
         dm_message: dm,
         stop_bot_after_send: stopSwitch.classList.contains("active"),
         is_active: activeSwitch.classList.contains("active"),
+        media_url: media.type === "none" ? null : media.url,
+        media_type: media.type === "none" ? null : media.type,
       };
 
       submitBtn.disabled = true;
       submitBtn.textContent = "جارٍ الحفظ…";
       try {
+        if (media.type !== "none") {
+          // فحص الرابط من الخادم قبل الحفظ (والخادم يتحقق مرة أخرى عند الإنشاء/التعديل)
+          const verified = await mediaField.verifyLink();
+          if (!verified.ok) {
+            showError(verified.error);
+            submitBtn.disabled = false;
+            submitBtn.textContent = isEdit ? "حفظ" : "إضافة";
+            return;
+          }
+          if (verified.skipped && verified.error) {
+            this.showToast("تعذّر فحص الرابط مسبقًا، سيتحقق الخادم عند الحفظ.", "info");
+          }
+        }
         if (isEdit) await updateKeyword(keyword.id, payload);
         else await createKeyword(postId, payload);
         modal.close();
@@ -1403,6 +1913,317 @@ const PostsPage = {
         submitBtn.textContent = isEdit ? "حفظ" : "إضافة";
       }
     });
+  },
+
+  /**
+   * حقل الوسائط — مكوّن واحد يُعاد استعماله في:
+   *   1) نموذج الكلمة المفتاحية (إضافة/تعديل).
+   *   2) نافذة "إضافة منشور" (الكلمة المفتاحية الأولى).
+   * لا تكرار: كل المنطق (النوع، الرابط، الرفع، المعاينة، الفحص) هنا.
+   *
+   * @returns {{element: HTMLElement, getValue: Function, setValue: Function,
+   *            validate: Function, verifyLink: Function, isBusy: Function,
+   *            setVisible: Function, destroy: Function}}
+   */
+  createMediaField({
+    initialType = null,
+    initialUrl = "",
+    onChange = null,
+    onBusyChange = null,
+    uploadEnabled = true,
+  } = {}) {
+    const state = {
+      type: initialType === "image" || initialType === "video" ? initialType : "none",
+      url: initialUrl || "",
+      busy: false,
+      // آخر رابط تم فحصه بنجاح (لتفادي تكرار الطلب عند الحفظ)
+      checkedUrl: "",
+      checkedType: "",
+    };
+
+    const node = this.el("div", "media-section");
+    node.appendChild(this.el("div", "form-label", "مرفق وسائط (اختياري)"));
+
+    const seg = this.buildMediaTypeSelector(state.type, (next) => {
+      state.type = next;
+      if (next === "none") {
+        state.url = "";
+        urlInput.value = "";
+      }
+      setCheckMessage("");
+      refresh();
+    });
+    node.appendChild(seg.wrap);
+
+    // صف الرابط + زر الرفع
+    const urlRow = this.el("div", "media-url-row");
+    const urlInput = this.el("input", "form-input media-url-input");
+    urlInput.type = "url";
+    urlInput.dir = "ltr";
+    urlInput.placeholder = "https://.../file.jpg";
+    urlInput.value = state.url;
+    urlInput.addEventListener("input", () => {
+      state.url = urlInput.value.trim();
+      const detected = this.detectMediaTypeFromUrl(state.url);
+      if (detected && detected !== state.type) {
+        state.type = detected;
+        Object.keys(seg.buttons).forEach((k) => {
+          seg.buttons[k].classList.toggle("active", k === detected);
+          seg.buttons[k].setAttribute("aria-pressed", k === detected ? "true" : "false");
+        });
+      }
+      setCheckMessage("");
+      refresh();
+    });
+    urlRow.appendChild(urlInput);
+
+    const uploadBtn = this.el("button", "keyword-btn", "رفع ملف");
+    uploadBtn.type = "button";
+    const fileInput = this.el("input", "media-file-input");
+    fileInput.type = "file";
+    fileInput.accept = "image/jpeg,image/png,image/gif,video/mp4";
+    fileInput.addEventListener("change", () => {
+      const file = fileInput.files && fileInput.files[0];
+      if (file) doUpload(file);
+      fileInput.value = "";
+    });
+    uploadBtn.addEventListener("click", () => fileInput.click());
+    urlRow.appendChild(uploadBtn);
+    urlRow.appendChild(fileInput);
+    node.appendChild(urlRow);
+
+    // شريط التقدم
+    const progress = this.el("div", "media-progress hidden");
+    const progressBar = this.el("div", "media-progress-bar");
+    progress.appendChild(progressBar);
+    node.appendChild(progress);
+
+    node.appendChild(
+      this.el(
+        "div",
+        "form-hint",
+        "رابط مباشر عام. الصور حتى 8 ميغابايت (jpg/png/gif)، والفيديوهات حتى 25 ميغابايت (mp4). روابط Google Drive لن تعمل."
+      )
+    );
+
+    // المعاينة المباشرة
+    const previewHost = this.el("div", "media-preview-host");
+    node.appendChild(previewHost);
+
+    // أزرار: فحص الرابط / إزالة الوسائط
+    const actions = this.el("div", "media-actions");
+    const checkBtn = this.el("button", "keyword-btn", "فحص الرابط");
+    checkBtn.type = "button";
+    const removeBtn = this.el("button", "keyword-btn danger", "إزالة الوسائط");
+    removeBtn.type = "button";
+    actions.appendChild(checkBtn);
+    actions.appendChild(removeBtn);
+    node.appendChild(actions);
+
+    const checkMsg = this.el("div", "media-check-msg hidden");
+    node.appendChild(checkMsg);
+
+    const setCheckMessage = (text, tone) => {
+      checkMsg.textContent = text || "";
+      checkMsg.className = "media-check-msg" + (text ? " " + (tone || "info") : " hidden");
+    };
+
+    const submitGuard = { busy: false };
+
+    const setBusy = (busy) => {
+      state.busy = busy;
+      submitGuard.busy = busy;
+      uploadBtn.disabled = busy;
+      checkBtn.disabled = busy;
+      removeBtn.disabled = busy || state.type === "none";
+      urlInput.disabled = busy;
+      progress.classList.toggle("hidden", !busy);
+      if (onBusyChange) onBusyChange(busy);
+    };
+
+    const refresh = () => {
+      previewHost.textContent = "";
+      removeBtn.disabled = state.busy || state.type === "none";
+      if (state.type !== "none" && state.url) {
+        this.renderMediaPreview(previewHost, state.url, state.type);
+      }
+      if (onChange) onChange({ type: state.type, url: state.url });
+    };
+
+    const activateType = (type) => {
+      Object.keys(seg.buttons).forEach((k) => {
+        seg.buttons[k].classList.toggle("active", k === type);
+        seg.buttons[k].setAttribute("aria-pressed", k === type ? "true" : "false");
+      });
+    };
+
+    removeBtn.addEventListener("click", () => {
+      state.type = "none";
+      state.url = "";
+      state.checkedUrl = "";
+      state.checkedType = "";
+      urlInput.value = "";
+      activateType("none");
+      setCheckMessage("");
+      refresh();
+    });
+
+    checkBtn.addEventListener("click", async () => {
+      if (state.type === "none") {
+        setCheckMessage("اختر نوع الوسائط أولاً (صورة أو فيديو).", "error");
+        return;
+      }
+      const check = this.validateMediaUrlClient(state.url, state.type);
+      if (!check.ok) {
+        setCheckMessage(check.error, "error");
+        return;
+      }
+      setBusy(true);
+      setCheckMessage("جارٍ فحص الرابط…", "info");
+      try {
+        const res = await checkMediaLink(state.url, state.type);
+        const size = res && res.size ? this.formatMediaSize(res.size) : "غير معروف";
+        const warnings = (res && res.warnings) || [];
+        const summary =
+          "الرابط صالح — النوع: " +
+          this.mediaTypeLabel(res.type) +
+          " — الحجم: " +
+          size;
+        setCheckMessage(
+          warnings.length ? summary + " — " + warnings.join(" ") : summary,
+          warnings.length ? "warning" : "success"
+        );
+        state.checkedUrl = state.url;
+        state.checkedType = state.type;
+      } catch (err) {
+        state.checkedUrl = "";
+        state.checkedType = "";
+        setCheckMessage(err.message || "تعذّر فحص الرابط.", "error");
+      } finally {
+        setBusy(false);
+      }
+    });
+
+    const doUpload = async (file) => {
+      const max = file.type === "video/mp4" ? 25 * 1024 * 1024 : 8 * 1024 * 1024;
+      if (file.size > max) {
+        setCheckMessage(
+          file.type === "video/mp4"
+            ? "حجم الفيديو يتجاوز 25 ميغابايت."
+            : "حجم الصورة يتجاوز 8 ميغابايت.",
+          "error"
+        );
+        return;
+      }
+      setBusy(true);
+      setCheckMessage("جارٍ رفع الملف…", "info");
+      try {
+        const res = await uploadMedia(file);
+        state.url = res.url;
+        urlInput.value = res.url;
+        if (res.media_type) {
+          state.type = res.media_type;
+          activateType(res.media_type);
+        }
+        setCheckMessage(
+          "تم رفع الملف بنجاح — الحجم: " + this.formatMediaSize(res.size),
+          "success"
+        );
+        // الملف المرفوع من عندنا — لا داعي لفحصه قبل الحفظ
+        state.checkedUrl = state.url;
+        state.checkedType = state.type;
+        refresh();
+      } catch (err) {
+        if (err && err.status === 503) {
+          uploadBtn.classList.add("hidden");
+          fileInput.classList.add("hidden");
+        }
+        setCheckMessage(err.message || "تعذّر رفع الملف.", "error");
+      } finally {
+        setBusy(false);
+      }
+    };
+
+    // إخفاء زر الرفع إن لم يكن الرفع مفعّلًا على الخادم
+    if (uploadEnabled && typeof getMediaUploadAvailability === "function") {
+      getMediaUploadAvailability()
+        .then((res) => {
+          if (res && res.available === false) {
+            uploadBtn.classList.add("hidden");
+            fileInput.classList.add("hidden");
+          }
+        })
+        .catch(() => {
+          /* نُبقي الزر ظاهرًا ونكتفي برسالة الخطأ عند المحاولة */
+        });
+    } else if (!uploadEnabled) {
+      uploadBtn.classList.add("hidden");
+      fileInput.classList.add("hidden");
+    }
+
+    refresh();
+
+    return {
+      element: node,
+      getValue: () => ({ type: state.type, url: state.url }),
+      setValue: ({ type, url } = {}) => {
+        state.type = type === "image" || type === "video" ? type : "none";
+        state.url = typeof url === "string" ? url : "";
+        state.checkedUrl = "";
+        state.checkedType = "";
+        urlInput.value = state.url;
+        activateType(state.type);
+        setCheckMessage("");
+        refresh();
+      },
+      /** تحقق سريع من جهة العميل (نفس قواعد الخادم تقريبًا). */
+      validate: () => {
+        if (state.type === "none") return { ok: true };
+        return this.validateMediaUrlClient(state.url, state.type);
+      },
+      /**
+       * التحقق من الرابط عبر نقطة الفحص قبل الحفظ.
+       * يعيد { ok, error } — عند فشل الفحص بسبب رابط غير صالح نمنع الحفظ،
+       * أما انقطاع الشبكة/تحديد الطلبات فنكمل الحفظ لأن الخادم يتحقق بدوره.
+       */
+      verifyLink: async () => {
+        if (state.type === "none" || !state.url) return { ok: true };
+        if (state.checkedUrl === state.url && state.checkedType === state.type) {
+          return { ok: true };
+        }
+        try {
+          const res = await checkMediaLink(state.url, state.type);
+          if (res && res.ok === false) {
+            return { ok: false, error: res.error || "تعذّر التحقق من الرابط." };
+          }
+          state.checkedUrl = state.url;
+          state.checkedType = state.type;
+          return { ok: true, warnings: (res && res.warnings) || [] };
+        } catch (err) {
+          const status = err && err.status;
+          if (status === 400) {
+            return { ok: false, error: err.message || "الرابط غير صالح." };
+          }
+          return {
+            ok: true,
+            skipped: true,
+            error: err.message || "تعذّر فحص الرابط قبل الحفظ.",
+          };
+        }
+      },
+      isBusy: () => submitGuard.busy,
+      setVisible: (visible) => {
+        node.classList.toggle("hidden", !visible);
+      },
+      /** تنظيف كامل (إغلاق النافذة / إتمام الحفظ) — لا روابط مؤقتة معلّقة. */
+      destroy: () => {
+        previewHost.textContent = "";
+        state.url = "";
+        state.checkedUrl = "";
+        state.checkedType = "";
+        state.type = "none";
+      },
+    };
   },
 
   /* ---------------- COMMENTS TAB ---------------- */

@@ -117,6 +117,21 @@ openssl rand -hex 32
 | `GOOGLE_SHEET_ID`   | معرف الشيت (الافتراضي: شيت الطلبات الحالي)                    |
 | `GOOGLE_SHEET_TAB`  | اسم تبويب الطلبات (الافتراضي `ORDER`)                        |
 
+### Supabase Storage (رفع الوسائط — اختياري)
+
+تُستخدم فقط لو أردت رفع ملفات الوسائط من الداشبورد بدل استضافة الرابط خارجيًا. بدون هذه
+المتغيرات تعمل كل الوظائف الأخرى، ويعرض `/api/media/upload` خطأ `503` وتُخفي الواجهة زر
+الرفع تلقائيًا.
+
+| المتغير                     | الوصف                                                                   |
+| --------------------------- | ----------------------------------------------------------------------- |
+| `SUPABASE_URL`              | رابط مشروع Supabase (مثال: `https://xxxx.supabase.co`)                   |
+| `SUPABASE_SERVICE_ROLE_KEY` | مفتاح service role — **سريّ**: لا يُوضع في الواجهة ولا يُطبع في اللوج    |
+| `SUPABASE_MEDIA_BUCKET`     | اسم الـ bucket العام (الافتراضي: `voice-messages`)                       |
+
+> يجب أن يكون الـ bucket **عامًا (public)** حتى يعمل الرابط المُعاد مع معاينة الواجهة
+> وإرسال الملف عبر Messenger. مجلد الرفع داخله: `dashboard-media/`.
+
 ## التشغيل محليًا
 
 ```bash
@@ -168,16 +183,85 @@ npm start
 | PATCH  | `/api/orders/:orderNumber/status` | تحديث حالة طلبية في الشيت                                              |
 | GET    | `/api/posts/summary`              | ملخص المنشورات للوحة (عدد نشط/موقوف… قبل مسار `/:id`)                 |
 | GET    | `/api/posts`                      | قائمة منشورات التعليقات التلقائية (بحث/حالة/ترقيم)                      |
-| POST   | `/api/posts`                      | إنشاء منشور (استخراج المفتاح تلقائيًا من الرابط)                        |
+| POST   | `/api/posts`                      | إنشاء منشور (استخراج المفتاح تلقائيًا من الرابط) + كلمة مفتاحية أولى اختيارية |
 | GET    | `/api/posts/:id`                  | منشور + كلماته المفتاحية + إحصاءاته                                     |
 | PATCH  | `/api/posts/:id`                  | تعديل منشور (عنوان/رابط/صيغ رد/تفعيل)                                  |
 | DELETE | `/api/posts/:id`                  | حذف منشور (409 عند وجود سجلات مرتبطة — عطّله بدلًا من ذلك)             |
-| POST   | `/api/posts/:id/keywords`         | إضافة كلمة مفتاحية (رسالة خاص + إيقاف البوت اختياريًا)                  |
-| PATCH  | `/api/posts/keywords/:keywordId`  | تعديل كلمة مفتاحية                                                      |
+| POST   | `/api/posts/:id/keywords`         | إضافة كلمة مفتاحية (رسالة خاص + إيقاف البوت + مرفق وسائط اختياريًا)     |
+| PATCH  | `/api/posts/keywords/:keywordId`  | تعديل كلمة مفتاحية (بما فيها `media_url` / `media_type`)                 |
 | DELETE | `/api/posts/keywords/:keywordId`  | حذف كلمة مفتاحية                                                        |
 | POST   | `/api/posts/:id/next-variant`     | اختيار صيغة الرد التالية بالتناوب (Round-Robin) وتحديث العداد            |
 | GET    | `/api/posts/:id/comments`         | تعليقات المنشور (حالات: pending/replied/failed/skipped + بحث + ترقيم)   |
 | GET    | `/api/posts/:id/hits`             | إصابات (hits) المنشور (ترقيم صفحات)                                     |
+| POST   | `/api/media/check`                | فحص رابط وسائط (HEAD آمن) → `{ ok, type, size, warnings[] }`             |
+| POST   | `/api/media/upload`               | رفع ملف وسائط (multipart) إلى Supabase Storage → `{ url, media_type, size }` |
+| GET    | `/api/media/upload-availability`  | هل الرفع مفعّل على الخادم؟ → `{ available: true/false }`                 |
+
+### مرفق الوسائط (صورة أو فيديو) لكل كلمة مفتاحية
+
+الكلمة المفتاحية يمكن أن تحمل **مرفقًا واحدًا فقط** (صورة **أو** فيديو) يُرسل بعد رسالة
+الخاص. تُخزَّن في عمودين: `bot_post_keywords.media_type` (`image`/`video`) و
+`bot_post_keywords.media_url`. العمودان إما أن يكونا `NULL` معًا أو غير `NULL` معًا
+(قيد `bot_post_keywords_media_chk`).
+
+- `media_url` و `media_type`: إما كلاهما موجود أو كلاهما فارغ (`null` / `""` = إزالة الوسائط).
+- `media_url`: HTTPS فقط، رابط صالح، ≤ 2000 حرف، بلا بيانات اعتماد، ولا يشير إلى localhost
+  أو عناوين IP خاصة.
+- `media_type`: `image` أو `video`. إذا أُرسل `media_url` بدون `media_type` يُكتشف النوع
+  تلقائيًا من امتداد الملف.
+- الامتداد يجب أن يطابق النوع (مع تجاهل query string):
+  `image` = `.jpg` `.jpeg` `.png` `.gif` — `video` = `.mp4`.
+- روابط مشاركة Google Drive / Dropbox (وأمثالها) مرفوضة: **يجب أن يكون رابطًا مباشرًا
+  عامًا للملف**.
+- رسالة الخاص (`dm_message`) تبقى **مطلوبة** عندما تكون الكلمة نشطة — الرسالة الأولى نصية
+  فقط، والوسائط تُرسل بعدها.
+
+فحص الرابط (`POST /api/media/check`) يعمل بطلب `HEAD` بمهلة 5 ثوانٍ وحد أقصى 2 تحويلات
+(redirects) مع حماية SSRF (حل DNS ثم حجب العناوين الخاصة/الاسترجاعية/الloopback). يشترط
+الرد `200` وأن يبدأ `Content-Type` بـ `image/` أو `video/` مطابقًا للنوع، وأن يكون
+`Content-Length` ضمن الحدود (صورة ≤ 8 ميغابايت، فيديو ≤ 25 ميغابايت). إذا لم يستجب
+المضيف لطلب `HEAD` يُقبل الرابط مع **تحذير** (warnings).
+
+رفع الملفات (`POST /api/media/upload`) — اختياري:
+- `multipart/form-data` بحقل `file` (multer + memory storage).
+- الأنواع المسموحة: `image/jpeg`, `image/png`, `image/gif`, `video/mp4`.
+- الحدود: صورة ≤ 8 ميغابايت، فيديو ≤ 25 ميغابايت.
+- الرفع يتم إلى Supabase Storage عبر Storage REST API داخل مجلد `dashboard-media/` باسم
+  عشوائي (uuid + الامتداد الأصلي) ثم يُرجع الرابط العام.
+- إذا لم تُضبط متغيرات Supabase يُرجع `503` برسالة واضحة وتُخفي الواجهة زر الرفع.
+- **مفتاح service role لا يُعرض أبدًا للواجهة ولا يُسجَّل في اللوج.**
+
+كلا نقطتي `/api/media/check` و `/api/media/upload` محميتان بـ **rate limit: 30 طلبًا كل
+10 دقائق لكل IP**.
+
+### الكلمة المفتاحية الأولى مع إنشاء المنشور (`POST /api/posts`)
+
+يمكن إرسال الكلمة المفتاحية الأولى (مع مرفقها الاختياري) في **نفس طلب إنشاء المنشور**:
+
+```json
+{
+  "post_url": "https://www.facebook.com/reel/1234567890123",
+  "platform": "facebook",
+  "comment_reply_variants": ["مرحبا"],
+  "first_keyword": {
+    "keyword": "سعر",
+    "dm_message": "رسالة ترحيب",
+    "stop_bot_after_send": true,
+    "is_active": true,
+    "media_url": "https://cdn.example.com/pic.jpg",
+    "media_type": "image"
+  }
+}
+```
+
+- `first_keyword` **اختياري**: إن لم يُرسل يُنشأ المنشور فقط (السلوك السابق دون تغيير).
+- الحقول: `keyword` (≤ 100 حرف، يُطبَّع نصّها)، `dm_message` (**مطلوب**، ≤ 2000 حرف)،
+  `stop_bot_after_send` و `is_active` (قيمة `true`/`false`، الافتراضي `true`)،
+  `media_url` و `media_type` (اختياريان، **بنفس قواعد مرفق الوسائط** أعلاه: HTTPS فقط،
+  نوع مطابق للامتداد، `NULL` معًا أو معًا معًا).
+- **نفس المعاملة (transaction)**: المنشور والكلمة الأولى يُنشآن معًا. إذا فشل التحقق من
+  الوسائط أو ظهر تعارض في الكلمة النشطة يُرجع خطأ (`400` / `409`) **دون إنشاء أي سجل**.
+- الرد `201` يضم `first_keyword` مع `media_type` و `media_url` عند وجوده.
 
 ### قواعد مهمة في منشورات التعليقات التلقائية
 
@@ -232,20 +316,26 @@ backend/
 │   │   ├── analytics.routes.js
 │   │   ├── contacts.routes.js
 │   │   ├── orders.routes.js       # الطلبيات: يقرأ/يكتب الشيت مباشرة عبر googleSheets.js
-│   │   └── posts.routes.js
+│   │   ├── posts.routes.js
+│   │   └── media.routes.js        # فحص رابط الوسائط + رفع الملفات (Supabase Storage)
 │   ├── utils/
 │   │   ├── postKey.js            # استخراج المعرّف من روابط فيسبوك
 │   │   ├── resolveShortUrl.js    # فك الروابط المختصرة (قائمة مضيفات مسموحة)
-│   │   └── resolveNumericPostId.js # بحث pfbid عبر Graph API
+│   │   ├── resolveNumericPostId.js # بحث pfbid عبر Graph API
+│   │   └── media.js              # قواعد روابط الوسائط + فحص HEAD آمن (SSRF)
 │   ├── cron.js                 # إعادة تفعيل البوتات الموقوفة (كل 5 دقائق)
 │   ├── app.js                  # Express app: CORS مضيّق + helmet + static
 │   └── server.js               # نقطة التشغيل (startCronJobs + listen)
 ├── migrations/                 # SQL: فهارس، bot_paused_until، عدّاد صيغ الرد
 │   ├── 002_indexes.sql
 │   ├── 003_add_bot_paused_until.sql
-│   └── 004_add_variant_index.sql
+│   ├── 004_add_variant_index.sql
+│   ├── 005_instagram_platform.sql
+│   └── 006_add_keyword_media.sql  # media_type + media_url (+ CHECK idempotent)
 ├── scripts/
-│   └── google-oauth.js          # توليد GOOGLE_REFRESH_TOKEN تلقائيًا
+│   ├── google-oauth.js          # توليد GOOGLE_REFRESH_TOKEN تلقائيًا
+│   ├── run-migrations.js         # تشغيل كل ملفات migrations/ بالترتيب
+│   └── check-media-columns.js   # التأكد من وجود عمودَي media_* والقيد في القاعدة
 ├── .env.example
 ├── .gitignore
 ├── Procfile
@@ -253,3 +343,13 @@ backend/
 ```
 
 شغّل ملفات `migrations/*.sql` على قاعدة البيانات بالترتيب (مرة واحدة لكل ملف عند التحديث).
+
+```bash
+cd backend
+npm install
+node scripts/run-migrations.js   # يشغّل كل الملفات بالترتيب (idempotent)
+```
+
+> كل ملف migration آمن لإعادة التشغيل (`IF NOT EXISTS` / `DO $$`): `006_add_keyword_media.sql`
+> يضيف `media_type` و `media_url` إلى `bot_post_keywords` مع القيد `bot_post_keywords_media_chk`.
+> للتحقّق: `node scripts/check-media-columns.js`.
