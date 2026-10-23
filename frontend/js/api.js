@@ -134,7 +134,28 @@ const getPostsSummary = (platform = "facebook") =>
 const listPosts = (params = {}) =>
   apiFetch("/api/posts" + buildQueryString(params));
 
-const createPost = (body) => apiFetch("/api/posts", { method: "POST", body });
+/** رسالة الخاص اختيارية: الفارغ يُرسل null بدل سلسلة فارغة/مسافات. */
+function withOptionalDmMessage(body) {
+  if (!body || typeof body !== "object") return body;
+  const next = { ...body };
+  if (Object.prototype.hasOwnProperty.call(next, "dm_message")) {
+    const value = typeof next.dm_message === "string" ? next.dm_message.trim() : "";
+    next.dm_message = value || null;
+  }
+  if (next.first_keyword && typeof next.first_keyword === "object") {
+    const firstKeyword = { ...next.first_keyword };
+    if (Object.prototype.hasOwnProperty.call(firstKeyword, "dm_message")) {
+      const value =
+        typeof firstKeyword.dm_message === "string" ? firstKeyword.dm_message.trim() : "";
+      firstKeyword.dm_message = value || null;
+    }
+    next.first_keyword = firstKeyword;
+  }
+  return next;
+}
+
+const createPost = (body) =>
+  apiFetch("/api/posts", { method: "POST", body: withOptionalDmMessage(body) });
 
 const getPost = (id) => apiFetch("/api/posts/" + encodeURIComponent(id));
 
@@ -147,13 +168,13 @@ const deletePost = (id) =>
 const createKeyword = (postId, body) =>
   apiFetch(`/api/posts/${encodeURIComponent(postId)}/keywords`, {
     method: "POST",
-    body,
+    body: withOptionalDmMessage(body),
   });
 
 const updateKeyword = (keywordId, body) =>
   apiFetch(`/api/posts/keywords/${encodeURIComponent(keywordId)}`, {
     method: "PATCH",
-    body,
+    body: withOptionalDmMessage(body),
   });
 
 const deleteKeyword = (keywordId) =>

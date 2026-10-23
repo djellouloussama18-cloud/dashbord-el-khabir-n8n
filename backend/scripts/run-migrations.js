@@ -16,6 +16,7 @@ const migrations = [
   '004_add_variant_index.sql',
   '005_instagram_platform.sql',
   '006_add_keyword_media.sql',
+  '007_dm_message_optional.sql',
 ];
 
 async function runMigrations() {

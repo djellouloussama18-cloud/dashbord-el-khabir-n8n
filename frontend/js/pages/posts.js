@@ -75,6 +75,70 @@ const PostsPage = {
     return s.length > max ? s.slice(0, max) + "…" : s;
   },
 
+  dmMessageText(dmMessage) {
+    const text = typeof dmMessage === "string" ? dmMessage.trim() : "";
+    return text ? this.truncate(text, 140) : "بدون رسالة خاص";
+  },
+
+  mediaAttached(media) {
+    return !!media && media.type !== "none";
+  },
+
+  updateDmCounter(counter, length, hasMedia) {
+    if (!counter) return;
+    const max = hasMedia ? 640 : 2000;
+    counter.textContent = length + " / " + max;
+    counter.classList.toggle("is-warning", hasMedia && length > 640);
+  },
+
+  validateDmMessageClient(value, hasMedia) {
+    const dm = typeof value === "string" ? value.trim() : "";
+    if (hasMedia && !dm) {
+      return { ok: false, error: "الرسالة مطلوبة عند إرفاق صورة أو فيديو" };
+    }
+    if (hasMedia && dm.length > 640) {
+      return {
+        ok: false,
+        error: "الرسالة يجب ألا تتجاوز 640 حرفًا عند إرفاق وسائط",
+      };
+    }
+    if (dm.length > 2000) {
+      return { ok: false, error: "رسالة الخاص يجب ألا تتجاوز 2000 حرف." };
+    }
+    return { ok: true, value: dm };
+  },
+
+  setFieldError(errorEl, message) {
+    if (!errorEl) return;
+    errorEl.textContent = message || "";
+    errorEl.classList.toggle("hidden", !message);
+  },
+
+  syncStopBotSwitch(stopSwitch, noteEl, hasMessage) {
+    if (!stopSwitch) return;
+    if (!hasMessage) {
+      if (!stopSwitch.classList.contains("disabled")) {
+        stopSwitch.dataset.wasActive = stopSwitch.classList.contains("active")
+          ? "1"
+          : "0";
+      }
+      stopSwitch.classList.remove("active");
+      stopSwitch.setAttribute("aria-checked", "false");
+      stopSwitch.classList.add("disabled");
+      stopSwitch.setAttribute("aria-disabled", "true");
+      if (noteEl) noteEl.classList.remove("hidden");
+      return;
+    }
+    stopSwitch.classList.remove("disabled");
+    stopSwitch.removeAttribute("aria-disabled");
+    if (stopSwitch.dataset.wasActive === "1") {
+      stopSwitch.classList.add("active");
+      stopSwitch.setAttribute("aria-checked", "true");
+    }
+    delete stopSwitch.dataset.wasActive;
+    if (noteEl) noteEl.classList.add("hidden");
+  },
+
   typeLabel(type) {
     if (type === "reel") return "ريل";
     if (type === "video") return "فيديو";
@@ -723,10 +787,11 @@ const PostsPage = {
     dmInput.placeholder = "الرسالة التي سيرسلها البوت في الخاص عند كتابة الكلمة";
 
     const dmCounter = this.el("div", "form-counter", "0 / 2000");
-    dmInput.addEventListener("input", () => {
-      dmCounter.textContent = dmInput.value.length + " / 2000";
-    });
-    const dmField = this.buildField("رسالة الخاص", dmInput);
+    const dmField = this.buildField(
+      "رسالة الخاص",
+      dmInput,
+      "اختياري — اتركها فارغة للرد على التعليق فقط بدون إرسال رسالة في الخاص"
+    );
     dmField.appendChild(dmCounter);
 
     // خطأ خاص بحقل رسالة الخاص (يظهر أسفل الحقل)
@@ -750,7 +815,7 @@ const PostsPage = {
 
     /* ---------- الكلمة المفتاحية الأولى: مرفق وسائط + معاينة ---------- */
     // نفس مكوّن نموذج الكلمة المفتاحية (بلا تكرار).
-    // let لأنها تُستعمل داخل refreshPreview قبل إسناد قيمتها.
+    // let لأنها تُستعمل داخل refreshFirstKeywordUi قبل إسناد قيمتها.
     let mediaField = null;
 
     // المعاينة مطوية افتراضيًا على الشاشات الصغيرة (النافذة طويلة).
@@ -758,29 +823,28 @@ const PostsPage = {
       collapsed: typeof window !== "undefined" && window.innerWidth < 768,
     });
 
-    const refreshPreview = () => {
+    const showDmError = (msg) => this.setFieldError(dmError, msg);
+
+    const refreshFirstKeywordUi = () => {
       const media = mediaField ? mediaField.getValue() : { type: "none", url: "" };
+      const hasMedia = this.mediaAttached(media);
+      this.updateDmCounter(dmCounter, dmInput.value.length, hasMedia);
       previewPanel.update({
         post: { comment_reply_variants: variants.getVariants() },
         dmMessage: dmInput.value.trim(),
-        mediaUrl: media.type === "none" ? "" : media.url,
-        mediaType: media.type === "none" ? "" : media.type,
+        mediaUrl: hasMedia ? media.url : "",
+        mediaType: hasMedia ? media.type : "",
       });
     };
 
     mediaField = this.createMediaField({
       initialType: "none",
       initialUrl: "",
-      onChange: refreshPreview,
+      onChange: () => refreshFirstKeywordUi(),
       onBusyChange: (busy) => {
         submitBtn.disabled = busy;
       },
     });
-
-    const showDmError = (msg) => {
-      dmError.textContent = msg || "";
-      dmError.classList.toggle("hidden", !msg);
-    };
 
     // قسم الوسائط لا معنى له بدون كلمة مفتاحية → نخفيه حتى تُكتب الكلمة.
     const syncMediaVisibility = () => {
@@ -789,10 +853,19 @@ const PostsPage = {
       previewPanel.element.classList.toggle("hidden", !hasKeyword);
       if (!hasKeyword) showDmError("");
     };
+    const resetFirstKeyword = () => {
+      kwInput.value = "";
+      dmInput.value = "";
+      showDmError("");
+      mediaField.destroy();
+      mediaField.setValue({ type: "none", url: "" });
+      syncMediaVisibility();
+      refreshFirstKeywordUi();
+    };
     kwInput.addEventListener("input", syncMediaVisibility);
     dmInput.addEventListener("input", () => {
       showDmError("");
-      refreshPreview();
+      refreshFirstKeywordUi();
     });
 
     const body = [
@@ -814,7 +887,7 @@ const PostsPage = {
       errorBox,
     ];
     syncMediaVisibility();
-    refreshPreview();
+    refreshFirstKeywordUi();
 
     const submitBtn = this.el("button", "notes-btn primary", "إنشاء");
     submitBtn.type = "button";
@@ -827,10 +900,8 @@ const PostsPage = {
       footerNodes: [cancelBtn, submitBtn],
       scrollable: true,
       onClose: () => {
-        // تنظيف كامل عند الإغلاق (تفادي بقاء مرفق في النموذج)
-        mediaField.destroy();
-        mediaField.setValue({ type: "none", url: "" });
-        syncMediaVisibility();
+        // تنظيف كامل عند الإغلاق (تفادي بقاء مرفق أو رسالة في النموذج)
+        resetFirstKeyword();
       },
     });
 
@@ -867,11 +938,13 @@ const PostsPage = {
         return;
       }
 
-      // كلمة مفتاحية بلا رسالة خاص → الرسالة مطلوبة (النص أولًا ثم الوسائط)
-      if (kw && !dm) {
-        showDmError("رسالة الخاص مطلوبة عندما تُستعمل الكلمة المفتاحية (تُرسل قبل الوسائط).");
-        dmInput.focus();
-        return;
+      if (kw) {
+        const dmCheck = this.validateDmMessageClient(dm, hasMedia);
+        if (!dmCheck.ok) {
+          showDmError(dmCheck.error);
+          dmInput.focus();
+          return;
+        }
       }
 
       if (hasMedia) {
@@ -895,8 +968,8 @@ const PostsPage = {
         // الكلمة الأولى + مرفقها — تُنشأ مع المنشور في نفس المعاملة
         payload.first_keyword = {
           keyword: kw,
-          dm_message: dm,
-          stop_bot_after_send: true,
+          dm_message: dm || null,
+          stop_bot_after_send: !!dm,
           is_active: true,
           media_url: hasMedia ? media.url : null,
           media_type: hasMedia ? media.type : null,
@@ -935,10 +1008,8 @@ const PostsPage = {
           "success"
         );
 
-        // تنظيف حقل الوسائط بعد الحفظ (تفادي بقاء رابط في النموذج)
-        mediaField.destroy();
-        mediaField.setValue({ type: "none", url: "" });
-        syncMediaVisibility();
+        // تنظيف قسم الكلمة المفتاحية بعد الحفظ (تفادي بقاء بيانات في النموذج)
+        resetFirstKeyword();
 
         // عرض المعرّف المستخرج + إغلاق
         errorBox.classList.add("hidden");
@@ -1307,6 +1378,26 @@ const PostsPage = {
     return (n / (1024 * 1024)).toFixed(2) + " ميغابايت";
   },
 
+  mediaCheckErrorText(err) {
+    const status = err && err.status;
+    if (status === 429) {
+      return "طلبات فحص كثيرة. انتظر قليلًا ثم أعد المحاولة، أو ارفع الملف مباشرة إن كان الرفع متاحًا.";
+    }
+    if (status === 400 && err && err.message) {
+      return (
+        err.message +
+        " تأكد أن الرابط مباشر وعام ويشير إلى ملف صورة أو فيديو صالح."
+      );
+    }
+    if (!status || status >= 500) {
+      return "تعذّر فحص الرابط الآن. تأكد أن الرابط مباشر وعام ويبدأ بـ https://، أو ارفع الملف مباشرة إن كان الرفع متاحًا.";
+    }
+    return (
+      (err && err.message) ||
+      "تعذّر فحص الرابط. تأكد أنه رابط مباشر وعام ويشير إلى ملف صحيح."
+    );
+  },
+
   /** نفس قواعد الخادم (تقريبًا) للتحقق من الرابط قبل الإرسال. */
   validateMediaUrlClient(rawUrl, type) {
     const url = (rawUrl || "").trim();
@@ -1477,12 +1568,14 @@ const PostsPage = {
     return bubble;
   },
 
-  /** معاينة "كيف يرى العميل": رد التعليق العام ثم رسالة الخاص ثم الوسائط. */
+  /** معاينة "كيف يرى العميل": رد التعليق العام ثم رسالة الخاص ثم زر/وسائط. */
   buildCustomerPreview(post, dmMessage, mediaUrl, mediaType) {
     const panel = this.el("div", "customer-preview");
     panel.appendChild(this.el("div", "customer-preview-title", "كيف يرى العميل"));
 
     const thread = this.el("div", "messenger-thread");
+    const message = typeof dmMessage === "string" ? dmMessage.trim() : "";
+    const hasMedia = !!mediaUrl && !!mediaType;
 
     const variants = (post && post.comment_reply_variants) || [];
     const sample = variants.length
@@ -1493,12 +1586,38 @@ const PostsPage = {
       .replace(/\{username\}/g, "العميل");
     thread.appendChild(this.buildMessengerBubble("public", commentText));
 
-    thread.appendChild(
-      this.buildMessengerBubble("dm", dmMessage ? dmMessage : "رسالة الخاص…")
-    );
+    if (!message) {
+      thread.appendChild(
+        this.el("div", "messenger-muted-note", "لن تُرسل رسالة في الخاص")
+      );
+      panel.appendChild(thread);
+      panel.appendChild(
+        this.el(
+          "div",
+          "form-hint",
+          "الرد يقتصر على التعليق العام. أضف رسالة في الخاص إذا أردت إرسال تفاصيل أو مرفق للعميل."
+        )
+      );
+      return panel;
+    }
+
+    const dmBubble = this.buildMessengerBubble("dm", message);
+    if (hasMedia) {
+      const buttonLabel =
+        mediaType === "video" ? "📹 شاهد الفيديو" : "🖼️ شاهد الصورة";
+      dmBubble.appendChild(this.el("span", "messenger-reply-button", buttonLabel));
+    }
+    thread.appendChild(dmBubble);
 
     // لا نعاين إلا رابطًا مباشرًا صالحًا (رسالة الفحص/الحفظ تشرح سبب الرفض لغير الصالح)
-    if (mediaUrl && mediaType && this.validateMediaUrlClient(mediaUrl, mediaType).ok) {
+    if (hasMedia && this.validateMediaUrlClient(mediaUrl, mediaType).ok) {
+      thread.appendChild(
+        this.el(
+          "div",
+          "messenger-media-caption",
+          "يصل المرفق بعد ضغط العميل على الزر"
+        )
+      );
       const mediaBubble = this.el("div", "messenger-bubble dm media");
       const holder = this.el("div", "messenger-media-holder");
       mediaBubble.appendChild(holder);
@@ -1511,7 +1630,9 @@ const PostsPage = {
       this.el(
         "div",
         "form-hint",
-        "1) رد البوت على التعليق (عام) — 2) رسالة الخاص — 3) الوسائط تُرسل بعد الرسالة."
+        hasMedia
+          ? "1) رد عام على التعليق — 2) رسالة في الخاص — 3) زر المرفق — 4) يصل المرفق بعد ضغط العميل."
+          : "1) رد عام على التعليق — 2) رسالة في الخاص (نصية فقط)."
       )
     );
     return panel;
@@ -1641,7 +1762,10 @@ const PostsPage = {
     const top = this.el("div", "keyword-card-top");
     top.appendChild(this.el("span", "keyword-text", kw.keyword));
 
-    if (kw.stop_bot_after_send) {
+    if (!kw.dm_message) {
+      top.appendChild(this.el("span", "keyword-reply-only-badge", "رد فقط"));
+    }
+    if (kw.dm_message && kw.stop_bot_after_send) {
       top.appendChild(this.el("span", "keyword-badge", "إيقاف البوت بعد الإرسال"));
     }
     if (kw.media_url && kw.media_type) {
@@ -1658,7 +1782,13 @@ const PostsPage = {
     );
     card.appendChild(top);
 
-    card.appendChild(this.el("div", "keyword-dm", this.truncate(kw.dm_message, 140)));
+    const dmText = this.dmMessageText(kw.dm_message);
+    const dmLine = this.el(
+      "div",
+      "keyword-dm" + (kw.dm_message ? "" : " muted"),
+      dmText
+    );
+    card.appendChild(dmLine);
 
     const actions = this.el("div", "keyword-actions");
 
@@ -1759,25 +1889,37 @@ const PostsPage = {
     const dmInput = this.el("textarea", "form-textarea");
     dmInput.rows = 4;
     dmInput.maxLength = 2000;
-    dmInput.value = isEdit ? keyword.dm_message : "";
-    dmInput.placeholder = "نص رسالة الخاص (≤ 2000 حرف)";
+    dmInput.value = isEdit && keyword.dm_message ? keyword.dm_message : "";
+    dmInput.placeholder = "نص رسالة الخاص (اختياري — حتى 2000 حرف)";
 
     const counter = this.el("div", "form-counter", dmInput.value.length + " / 2000");
-    dmInput.addEventListener("input", () => {
-      counter.textContent = dmInput.value.length + " / 2000";
-    });
-    const dmField = this.buildField("رسالة الخاص *", dmInput);
+    const dmField = this.buildField(
+      "رسالة الخاص",
+      dmInput,
+      "اختياري — اتركها فارغة للرد على التعليق فقط بدون إرسال رسالة في الخاص"
+    );
     dmField.appendChild(counter);
+
+    const dmError = this.el("div", "field-error hidden");
+    dmField.appendChild(dmError);
 
     const stopRow = this.el("div", "form-switch-row");
     stopRow.appendChild(this.el("span", "form-label", "إيقاف البوت بعد إرسال الرسالة"));
-    const stopSwitch = this.buildSwitch(isEdit ? keyword.stop_bot_after_send : true, () => {});
+    const stopSwitch = this.buildSwitch(
+      isEdit ? !!keyword.dm_message && !!keyword.stop_bot_after_send : true,
+      () => {}
+    );
     stopRow.appendChild(stopSwitch);
 
     const stopHint = this.el(
       "div",
       "form-hint",
       "إذا كان مفعّلًا، يتوقف البوت عن التفاعل مع هذا العميل بعد إرسال الرسالة."
+    );
+    const stopNoDmNote = this.el(
+      "div",
+      "form-hint hidden",
+      "هذا الخيار يعمل فقط عند إرسال رسالة في الخاص، لذا هو معطّل عندما لا توجد رسالة."
     );
 
     const activeRow = this.el("div", "form-switch-row");
@@ -1796,13 +1938,20 @@ const PostsPage = {
     let mediaField = null;
     const refreshPreview = () => {
       const media = mediaField ? mediaField.getValue() : { type: "none", url: "" };
+      const hasMedia = this.mediaAttached(media);
+      const hasMessage = !!dmInput.value.trim();
+      this.updateDmCounter(counter, dmInput.value.length, hasMedia);
+      this.syncStopBotSwitch(stopSwitch, stopNoDmNote, hasMessage);
+      stopHint.classList.toggle("hidden", !hasMessage);
       previewPanel.update({
         post: this.state.detail.post,
         dmMessage: dmInput.value.trim(),
-        mediaUrl: media.type === "none" ? "" : media.url,
-        mediaType: media.type === "none" ? "" : media.type,
+        mediaUrl: hasMedia ? media.url : "",
+        mediaType: hasMedia ? media.type : "",
       });
     };
+
+    const showDmError = (msg) => this.setFieldError(dmError, msg);
 
     /* ---------- قسم مرفق الوسائط (نفس المكوّن المستعمل في نافذة إضافة منشور) ---------- */
     mediaField = this.createMediaField({
@@ -1821,6 +1970,7 @@ const PostsPage = {
       previewPanel.element,
       stopRow,
       stopHint,
+      stopNoDmNote,
     ];
     if (this.state.detail.post && this.state.detail.post.platform === "instagram") {
       body.push(
@@ -1851,11 +2001,15 @@ const PostsPage = {
       errorBox.classList.remove("hidden");
     };
 
-    dmInput.addEventListener("input", refreshPreview);
+    dmInput.addEventListener("input", () => {
+      showDmError("");
+      refreshPreview();
+    });
     refreshPreview();
 
     submitBtn.addEventListener("click", async () => {
       errorBox.classList.add("hidden");
+      showDmError("");
       const kw = kwInput.value.trim();
       const dm = dmInput.value.trim();
       if (!kw) {
@@ -1863,14 +2017,18 @@ const PostsPage = {
         kwInput.focus();
         return;
       }
-      if (!dm) {
-        showError("رسالة الخاص مطلوبة.");
+
+      const media = mediaField.getValue();
+      const hasMedia = media.type !== "none";
+
+      const dmCheck = this.validateDmMessageClient(dm, hasMedia);
+      if (!dmCheck.ok) {
+        showDmError(dmCheck.error);
         dmInput.focus();
         return;
       }
 
-      const media = mediaField.getValue();
-      if (media.type !== "none") {
+      if (hasMedia) {
         const check = this.validateMediaUrlClient(media.url, media.type);
         if (!check.ok) {
           showError(check.error);
@@ -1880,11 +2038,13 @@ const PostsPage = {
 
       const payload = {
         keyword: kw,
-        dm_message: dm,
-        stop_bot_after_send: stopSwitch.classList.contains("active"),
+        dm_message: dmCheck.value || null,
+        stop_bot_after_send: dmCheck.value
+          ? stopSwitch.classList.contains("active")
+          : false,
         is_active: activeSwitch.classList.contains("active"),
-        media_url: media.type === "none" ? null : media.url,
-        media_type: media.type === "none" ? null : media.type,
+        media_url: hasMedia ? media.url : null,
+        media_type: hasMedia ? media.type : null,
       };
 
       submitBtn.disabled = true;
@@ -1978,8 +2138,9 @@ const PostsPage = {
     });
     urlRow.appendChild(urlInput);
 
-    const uploadBtn = this.el("button", "keyword-btn", "رفع ملف");
+    const uploadBtn = this.el("button", "keyword-btn media-upload-btn", "رفع ملف");
     uploadBtn.type = "button";
+    uploadBtn.title = "الطريقة الموصى بها: رفع الملف مباشرة";
     const fileInput = this.el("input", "media-file-input");
     fileInput.type = "file";
     fileInput.accept = "image/jpeg,image/png,image/gif,video/mp4";
@@ -1993,6 +2154,14 @@ const PostsPage = {
     urlRow.appendChild(fileInput);
     node.appendChild(urlRow);
 
+    node.appendChild(
+      this.el(
+        "div",
+        "form-hint",
+        "يجب أن يكون رابطًا مباشرًا عامًا للملف (HTTPS). الأفضل رفع الملف مباشرة إن كان الرفع متاحًا"
+      )
+    );
+
     // شريط التقدم
     const progress = this.el("div", "media-progress hidden");
     const progressBar = this.el("div", "media-progress-bar");
@@ -2003,7 +2172,7 @@ const PostsPage = {
       this.el(
         "div",
         "form-hint",
-        "رابط مباشر عام. الصور حتى 8 ميغابايت (jpg/png/gif)، والفيديوهات حتى 25 ميغابايت (mp4). روابط Google Drive لن تعمل."
+        "الصور حتى 8 ميغابايت (jpg/png/gif)، والفيديوهات حتى 25 ميغابايت (mp4). روابط Google Drive أو صفحات المشاركة لن تعمل."
       )
     );
 
@@ -2119,7 +2288,7 @@ const PostsPage = {
       } catch (err) {
         state.checkedUrl = "";
         state.checkedType = "";
-        setCheckMessage(err.message || "تعذّر فحص الرابط.", "error");
+        setCheckMessage(this.mediaCheckErrorText(err), "error");
       } finally {
         setBusy(false);
       }
@@ -2223,12 +2392,17 @@ const PostsPage = {
         } catch (err) {
           const status = err && err.status;
           if (status === 400) {
-            return { ok: false, error: err.message || "الرابط غير صالح." };
+            return {
+              ok: false,
+              error:
+                (err.message || "الرابط غير صالح.") +
+                " تأكد أن الرابط مباشر وعام ويشير إلى ملف صورة أو فيديو صالح.",
+            };
           }
           return {
             ok: true,
             skipped: true,
-            error: err.message || "تعذّر فحص الرابط قبل الحفظ.",
+            error: this.mediaCheckErrorText(err),
           };
         }
       },

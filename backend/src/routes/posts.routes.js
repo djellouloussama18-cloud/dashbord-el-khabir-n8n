@@ -39,8 +39,38 @@ const DUPLICATE_POST_MESSAGE = 'هذا المنشور مضاف مسبقًا';
 const DUPLICATE_KEYWORD_MESSAGE = 'هذه الكلمة المفتاحية مضافة مسبقًا في هذا المنشور';
 const DUPLICATE_KEYWORD_ON_POST_MESSAGE =
   'هذه الكلمة المفتاحية موجودة بالفعل في هذا المنشور.';
+const DM_REQUIRED_WITH_MEDIA_MESSAGE = 'الرسالة مطلوبة عند إرفاق صورة أو فيديو';
+const DM_TOO_LONG_WITH_MEDIA_MESSAGE =
+  'الرسالة يجب ألا تتجاوز 640 حرفًا عند إرفاق وسائط';
+const DM_TOO_LONG_MESSAGE = 'رسالة الخاص يجب ألا تتجاوز 2000 حرف.';
+const DM_MAX_LENGTH = 2000;
+const DM_MEDIA_MAX_LENGTH = 640;
 
 const PLATFORMS = ['facebook', 'instagram'];
+
+function parseDmMessage(value) {
+  const trimmed = trimString(value);
+  return trimmed === '' ? null : trimmed;
+}
+
+function hasMediaUrl(mediaUrl) {
+  return mediaUrl !== undefined && mediaUrl !== null;
+}
+
+function validateDmMessage(value, mediaAttached) {
+  const dmMessage = parseDmMessage(value);
+  if (mediaAttached) {
+    if (!dmMessage) {
+      return { ok: false, error: DM_REQUIRED_WITH_MEDIA_MESSAGE };
+    }
+    if (dmMessage.length > DM_MEDIA_MAX_LENGTH) {
+      return { ok: false, error: DM_TOO_LONG_WITH_MEDIA_MESSAGE };
+    }
+  } else if (dmMessage && dmMessage.length > DM_MAX_LENGTH) {
+    return { ok: false, error: DM_TOO_LONG_MESSAGE };
+  }
+  return { ok: true, value: dmMessage };
+}
 
 /**
  * الكلمة المفتاحية الأولى (اختيارية) مع مرفقها — تُنشأ مع المنشور في نفس المعاملة.
@@ -60,14 +90,6 @@ async function parseFirstKeyword(raw, platform) {
   }
   if (keyword.length > 100) {
     return { ok: false, error: 'الكلمة المفتاحية يجب ألا تتجاوز 100 حرف.' };
-  }
-
-  const dmMessage = trimString(raw.dm_message);
-  if (!dmMessage) {
-    return { ok: false, error: 'رسالة الخاص مطلوبة.' };
-  }
-  if (dmMessage.length > 2000) {
-    return { ok: false, error: 'رسالة الخاص يجب ألا تتجاوز 2000 حرف.' };
   }
 
   let stopBotAfterSend = true;
@@ -91,11 +113,22 @@ async function parseFirstKeyword(raw, platform) {
     return { ok: false, error: mediaValidation.error };
   }
 
+  const dmCheck = validateDmMessage(
+    raw.dm_message,
+    hasMediaUrl(mediaValidation.mediaUrl)
+  );
+  if (!dmCheck.ok) {
+    return { ok: false, error: dmCheck.error };
+  }
+  if (!dmCheck.value) {
+    stopBotAfterSend = false;
+  }
+
   return {
     ok: true,
     value: {
       keyword,
-      dmMessage,
+      dmMessage: dmCheck.value,
       stopBotAfterSend,
       isActive,
       mediaUrl: mediaValidation.mediaUrl,
@@ -395,14 +428,6 @@ router.post('/:id/keywords', async (req, res, next) => {
       return res.status(400).json({ error: 'الكلمة المفتاحية يجب ألا تتجاوز 100 حرف.' });
     }
 
-    const dmMessage = trimString(body.dm_message);
-    if (!dmMessage) {
-      return res.status(400).json({ error: 'رسالة الخاص مطلوبة.' });
-    }
-    if (dmMessage.length > 2000) {
-      return res.status(400).json({ error: 'رسالة الخاص يجب ألا تتجاوز 2000 حرف.' });
-    }
-
     let stopBotAfterSend = true;
     if (body.stop_bot_after_send !== undefined) {
       if (typeof body.stop_bot_after_send !== 'boolean') {
@@ -436,10 +461,21 @@ router.post('/:id/keywords', async (req, res, next) => {
       return res.status(400).json({ error: mediaValidation.error });
     }
 
+    const dmCheck = validateDmMessage(
+      body.dm_message,
+      hasMediaUrl(mediaValidation.mediaUrl)
+    );
+    if (!dmCheck.ok) {
+      return res.status(400).json({ error: dmCheck.error });
+    }
+    if (!dmCheck.value) {
+      stopBotAfterSend = false;
+    }
+
     const keywordData = {
       keyword,
       keywordNormalized: normalized,
-      dmMessage,
+      dmMessage: dmCheck.value,
       stopBotAfterSend,
       isActive,
     };
@@ -500,15 +536,9 @@ router.patch('/keywords/:keywordId', async (req, res, next) => {
       fields.keyword_normalized = normalized;
     }
 
-    if (Object.prototype.hasOwnProperty.call(body, 'dm_message')) {
-      const dmMessage = trimString(body.dm_message);
-      if (!dmMessage) {
-        return res.status(400).json({ error: 'رسالة الخاص مطلوبة.' });
-      }
-      if (dmMessage.length > 2000) {
-        return res.status(400).json({ error: 'رسالة الخاص يجب ألا تتجاوز 2000 حرف.' });
-      }
-      fields.dm_message = dmMessage;
+    const dmMessageSent = Object.prototype.hasOwnProperty.call(body, 'dm_message');
+    if (dmMessageSent) {
+      fields.dm_message = parseDmMessage(body.dm_message);
     }
 
     if (Object.prototype.hasOwnProperty.call(body, 'stop_bot_after_send')) {
@@ -543,6 +573,32 @@ router.patch('/keywords/:keywordId', async (req, res, next) => {
     }
     if (mediaValidation.mediaType !== undefined) {
       fields.media_type = mediaValidation.mediaType;
+    }
+
+    // نتحقق من الحالة النهائية بعد دمج التعديلات مع الصف الحالي.
+    const finalDmMessage = dmMessageSent
+      ? fields.dm_message
+      : existing.dm_message === undefined
+        ? null
+        : existing.dm_message;
+    const finalMediaUrl = Object.prototype.hasOwnProperty.call(fields, 'media_url')
+      ? fields.media_url
+      : existing.media_url === undefined
+        ? null
+        : existing.media_url;
+
+    const dmCheck = validateDmMessage(finalDmMessage, hasMediaUrl(finalMediaUrl));
+    if (!dmCheck.ok) {
+      return res.status(400).json({ error: dmCheck.error });
+    }
+
+    if (dmMessageSent) {
+      fields.dm_message = dmCheck.value;
+    }
+    // بلا رسالة خاصة لا معنى لإيقاف البوت بعد الإرسال.
+    if (!dmCheck.value) {
+      fields.dm_message = null;
+      fields.stop_bot_after_send = false;
     }
 
     const updated = await postsRepo.updateKeyword(keywordId, fields);
