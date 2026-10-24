@@ -275,52 +275,7 @@ async function normalizeKeyword(keyword) {
   return result.rows[0] ? result.rows[0].n : null;
 }
 
-/**
- * كشف تعارض كلمة مفتاحية نشطة تنتمي لمنشور نشط (عقد n8n #3).
- * excludeKeywordId لاستثناء الكلمة نفسها عند التعديل.
- * القاعدة العالمية تعمل لمنشورات فيسبوك فقط؛ إنستغرام لا تعارض بين المنشورات
- * (التفرّد داخل المنشور فقط عبر قيد القاعدة) — تُرجع null بلا استعلام.
- */
-async function findConflictingKeyword(normalized, excludeKeywordId = null, platform = 'facebook') {
-  if (platform === 'instagram') return null;
-  const result = await pool.query(
-    `SELECT p.title, p.post_url
-       FROM bot_post_keywords k
-       JOIN bot_posts p ON p.id = k.post_id
-      WHERE k.keyword_normalized = $1
-        AND k.is_active = TRUE
-        AND p.is_active = TRUE
-        AND p.platform = 'facebook'
-        AND ($2::bigint IS NULL OR k.id <> $2::bigint)
-      LIMIT 1`,
-    [normalized, excludeKeywordId]
-  );
-  return result.rows[0] || null;
-}
 
-/**
- * كشف تعارض عند إعادة تفعيل المنشور: هل توجد كلمة نشطة فـ هذا المنشور
- * تتشارك نفس keyword_normalized مع كلمة نشطة فـ منشور آخر نشط؟
- * لمنشورات فيسبوك فقط — إنستغرام يُرجع null (لا تعارض بين المنشورات).
- */
-async function findReactivationConflict(postId, platform = 'facebook') {
-  if (platform === 'instagram') return null;
-  const result = await pool.query(
-    `SELECT o.title, o.post_url, k.keyword
-       FROM bot_post_keywords k
-       JOIN bot_post_keywords k2
-         ON k2.keyword_normalized = k.keyword_normalized
-        AND k2.is_active = TRUE
-        AND k2.id <> k.id
-       JOIN bot_posts o ON o.id = k2.post_id AND o.is_active = TRUE
-                          AND o.platform = 'facebook'
-      WHERE k.post_id = $1::bigint
-        AND k.is_active = TRUE
-      LIMIT 1`,
-    [postId]
-  );
-  return result.rows[0] || null;
-}
 
 async function listKeywords(postId) {
   const result = await pool.query(
@@ -587,8 +542,6 @@ module.exports = {
   updatePost,
   deletePost,
   normalizeKeyword,
-  findConflictingKeyword,
-  findReactivationConflict,
   listKeywords,
   getKeywordById,
   createKeyword,

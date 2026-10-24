@@ -36,9 +36,8 @@ const INVALID_INSTAGRAM_KEY_MESSAGE =
 const INVALID_PLATFORM_MESSAGE = 'المنصة غير صالحة. القيم المسموحة: facebook أو instagram.';
 const PLATFORM_IMMUTABLE_MESSAGE = 'منصة المنشور لا يمكن تغييرها بعد الإنشاء.';
 const DUPLICATE_POST_MESSAGE = 'هذا المنشور مضاف مسبقًا';
-const DUPLICATE_KEYWORD_MESSAGE = 'هذه الكلمة المفتاحية مضافة مسبقًا في هذا المنشور';
 const DUPLICATE_KEYWORD_ON_POST_MESSAGE =
-  'هذه الكلمة المفتاحية موجودة بالفعل في هذا المنشور.';
+  'هذه الكلمة المفتاحية موجودة مسبقًا في هذا المنشور';
 const DM_REQUIRED_WITH_MEDIA_MESSAGE = 'الرسالة مطلوبة عند إرفاق صورة أو فيديو';
 const DM_TOO_LONG_WITH_MEDIA_MESSAGE =
   'الرسالة يجب ألا تتجاوز 640 حرفًا عند إرفاق وسائط';
@@ -189,10 +188,7 @@ function parseVariants(input) {
   return { ok: true, value: cleaned };
 }
 
-/** رسالة تعارض الكلمة المفتاحية (عقد n8n #3). */
-function keywordConflictMessage(conflict) {
-  return `هذه الكلمة المفتاحية مستعملة في منشور آخر نشط: «${conflict.title || conflict.post_url}»`;
-}
+
 
 function trimString(value) {
   return typeof value === 'string' ? value.trim() : '';
@@ -364,16 +360,6 @@ router.post('/', async (req, res, next) => {
       if (!firstKeywordNormalized) {
         return res.status(400).json({ error: EMPTY_NORMALIZED_MESSAGE });
       }
-      if (firstKeyword.value.isActive && isActive) {
-        const conflict = await postsRepo.findConflictingKeyword(
-          firstKeywordNormalized,
-          null,
-          platform
-        );
-        if (conflict) {
-          return res.status(409).json({ error: keywordConflictMessage(conflict) });
-        }
-      }
     }
 
     const { post, keyword } = await postsRepo.createPostWithFirstKeyword({
@@ -449,12 +435,7 @@ router.post('/:id/keywords', async (req, res, next) => {
       return res.status(400).json({ error: EMPTY_NORMALIZED_MESSAGE });
     }
 
-    if (isActive && post.is_active) {
-      const conflict = await postsRepo.findConflictingKeyword(normalized, null, platform);
-      if (conflict) {
-        return res.status(409).json({ error: keywordConflictMessage(conflict) });
-      }
-    }
+    // لا يتم فحص التعارض بين المنشورات المختلفة - يسمح بتكرار الكلمة بين المنشورات
 
     const mediaValidation = await validateKeywordMedia(body);
     if (!mediaValidation.ok) {
@@ -490,10 +471,13 @@ router.post('/:id/keywords', async (req, res, next) => {
     return res.status(201).json(created);
   } catch (err) {
     if (err.code === '23505') {
+      if (err.constraint === 'bot_post_keywords_post_active_kw_uidx' || err.constraint === 'bot_post_keywords_active_kw_uidx') {
+        return res.status(409).json({ error: DUPLICATE_KEYWORD_ON_POST_MESSAGE });
+      }
       if (platform === 'instagram') {
         return res.status(409).json({ error: DUPLICATE_KEYWORD_ON_POST_MESSAGE });
       }
-      return res.status(409).json({ error: DUPLICATE_KEYWORD_MESSAGE });
+      return res.status(409).json({ error: DUPLICATE_KEYWORD_ON_POST_MESSAGE });
     }
     if (err.code === '23503') {
       return res.status(409).json({ error: 'المنشور غير موجود.' });
@@ -557,12 +541,7 @@ router.patch('/keywords/:keywordId', async (req, res, next) => {
       fields.is_active = isActive;
     }
 
-    if (isActive && existing.post_is_active) {
-      const conflict = await postsRepo.findConflictingKeyword(normalized, keywordId, platform);
-      if (conflict) {
-        return res.status(409).json({ error: keywordConflictMessage(conflict) });
-      }
-    }
+    // لا يتم فحص التعارض بين المنشورات المختلفة - يسمح بتكرار الكلمة بين المنشورات
 
     const mediaValidation = await validateKeywordMedia(body);
     if (!mediaValidation.ok) {
@@ -605,10 +584,13 @@ router.patch('/keywords/:keywordId', async (req, res, next) => {
     return res.json(updated);
   } catch (err) {
     if (err.code === '23505') {
+      if (err.constraint === 'bot_post_keywords_post_active_kw_uidx' || err.constraint === 'bot_post_keywords_active_kw_uidx') {
+        return res.status(409).json({ error: DUPLICATE_KEYWORD_ON_POST_MESSAGE });
+      }
       if (platform === 'instagram') {
         return res.status(409).json({ error: DUPLICATE_KEYWORD_ON_POST_MESSAGE });
       }
-      return res.status(409).json({ error: DUPLICATE_KEYWORD_MESSAGE });
+      return res.status(409).json({ error: DUPLICATE_KEYWORD_ON_POST_MESSAGE });
     }
     return next(err);
   }
@@ -787,12 +769,7 @@ router.patch('/:id', async (req, res, next) => {
       }
     }
 
-    if (activating) {
-      const conflict = await postsRepo.findReactivationConflict(id, storedPlatform);
-      if (conflict) {
-        return res.status(409).json({ error: keywordConflictMessage(conflict) });
-      }
-    }
+    // لا يتم فحص التعارض بين المنشورات المختلفة عند تفعيل المنشور - يسمح بتكرار الكلمة بين المنشورات
 
     const updated = await postsRepo.updatePost(id, fields);
 

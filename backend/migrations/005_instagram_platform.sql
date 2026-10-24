@@ -90,10 +90,7 @@ CREATE TRIGGER trg_bot_post_keywords_platform
 -- ==========================================================================
 
 DROP INDEX IF EXISTS bot_post_keywords_active_kw_uidx;
-
-CREATE UNIQUE INDEX IF NOT EXISTS bot_post_keywords_fb_active_kw_uidx
-  ON public.bot_post_keywords (keyword_normalized)
-  WHERE is_active AND platform = 'facebook';
+DROP INDEX IF EXISTS bot_post_keywords_fb_active_kw_uidx;
 
 CREATE UNIQUE INDEX IF NOT EXISTS bot_post_keywords_post_active_kw_uidx
   ON public.bot_post_keywords (post_id, keyword_normalized)

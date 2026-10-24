@@ -17,6 +17,7 @@ const migrations = [
   '005_instagram_platform.sql',
   '006_add_keyword_media.sql',
   '007_dm_message_optional.sql',
+  '008_allow_shared_keywords.sql',
 ];
 
 async function runMigrations() {
